@@ -1,0 +1,58 @@
+name: Deploy Bot to VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Deploy to VPS
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script: |
+          cd /root/telegram-bot
+          
+          # Остановка бота
+          sudo systemctl stop telegram-bot
+          
+          # Backup текущей версии
+          cp bot.py bot.py.backup.$(date +%Y%m%d_%H%M%S)
+          
+          # Получение последних изменений
+          git fetch origin
+          git reset --hard origin/main
+          
+          # Обновление зависимостей (если изменился requirements.txt)
+          source venv/bin/activate
+          pip install -r requirements.txt --quiet
+          
+          # Обновление переменных окружения в systemd (если нужно)
+          sudo systemctl daemon-reload
+          
+          # Запуск бота
+          sudo systemctl start telegram-bot
+          
+          # Проверка статуса
+          sleep 3
+          sudo systemctl status telegram-bot --no-pager
+          
+          echo "✅ Deployment completed!"
+    
+    - name: Notify on success
+      if: success()
+      run: echo "🎉 Bot deployed successfully to VPS!"
+    
+    - name: Notify on failure
+      if: failure()
+      run: echo "❌ Deployment failed. Check logs."
