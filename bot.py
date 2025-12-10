@@ -419,6 +419,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raw_response = response.content[0].text
             logger.info(f"Raw response: {raw_response[:200]}...")
             
+            # Получаем информацию о токенах
+            input_tokens = response.usage.input_tokens
+            output_tokens = response.usage.output_tokens
+            
             # Очищаем и парсим JSON
             cleaned_json = clean_json_response(raw_response)
             
@@ -434,7 +438,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 # Отправляем ответ пользователю
                 ai_message = parsed_json.get('ai_message', '')
-                await update.message.reply_text(ai_message)
+                
+                # В обычном режиме добавляем статистику токенов
+                if not is_spec_mode:
+                    ai_message += f"\n\n📊 Токены: вопрос {input_tokens} | ответ {output_tokens}"
+                
+                # Разбиваем длинные сообщения (Telegram лимит ~4096 символов)
+                if len(ai_message) > 4000:
+                    chunks = [ai_message[i:i+4000] for i in range(0, len(ai_message), 4000)]
+                    for chunk in chunks:
+                        await update.message.reply_text(chunk)
+                else:
+                    await update.message.reply_text(ai_message)
                 
                 # Проверяем, завершён ли сбор ТЗ в режиме spec
                 if is_spec_mode:
@@ -448,12 +463,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             except json.JSONDecodeError as e:
                 logger.error(f"❌ Failed to parse JSON: {e}")
-                logger.error(f"Cleaned JSON: {cleaned_json}")
+                logger.error(f"Cleaned JSON: {cleaned_json[:500]}...")
                 
-                # В случае ошибки парсинга отправляем сырой ответ
-                await update.message.reply_text(
-                    f"⚠️ Получен некорректный формат ответа:\n\n{raw_response}"
-                )
+                # В случае ошибки парсинга отправляем сырой ответ с разбивкой
+                error_message = f"⚠️ Получен некорректный формат ответа:\n\n{raw_response}"
+                
+                # Разбиваем длинные сообщения
+                if len(error_message) > 4000:
+                    chunks = [error_message[i:i+4000] for i in range(0, len(error_message), 4000)]
+                    for chunk in chunks:
+                        await update.message.reply_text(chunk)
+                else:
+                    await update.message.reply_text(error_message)
                 
                 # Добавляем сырой ответ в историю
                 conversations[user_id].append({
