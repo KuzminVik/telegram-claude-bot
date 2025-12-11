@@ -36,6 +36,10 @@ MODELS_CONFIG = {
     'haiku': 'claude-haiku-4-5-20251001'
 }
 
+# Настройки сжатия истории
+COMPRESSION_THRESHOLD = 10  # Сжимать каждые 10 сообщений
+MAX_HISTORY_LENGTH = 30     # Максимальная длина истории перед сжатием
+
 # Системные промпты
 NORMAL_SYSTEM_PROMPT = """You are a helpful AI assistant. You must ALWAYS respond with ONLY a valid JSON object containing exactly two fields:
 - "user_message": the exact user's message
@@ -118,6 +122,19 @@ Keep your response focused and informative, but concise since multiple models wi
 
 Remember: ONLY the raw JSON object, nothing else!"""
 
+COMPRESSION_SYSTEM_PROMPT = """You are a helpful assistant that creates concise summaries of conversation history.
+
+Your task is to create a brief summary of the conversation provided. The summary should:
+1. Capture the key topics discussed
+2. Preserve important facts, decisions, or conclusions
+3. Be concise but informative (2-4 sentences)
+4. Be written in the same language as the conversation
+
+Respond with ONLY a valid JSON object:
+{"summary": "your summary text here"}
+
+Remember: ONLY the raw JSON object, nothing else!"""
+
 
 def clean_json_response(text: str) -> str:
     """Извлекает JSON из ответа, удаляя markdown и лишний текст"""
@@ -135,6 +152,67 @@ def clean_json_response(text: str) -> str:
     return text
 
 
+async def compress_conversation(user_id: int) -> bool:
+    """
+    Сжимает историю разговора, создавая саммари последних N сообщений
+    Возвращает True если сжатие выполнено успешно
+    """
+    try:
+        if user_id not in conversations or len(conversations[user_id]) < COMPRESSION_THRESHOLD:
+            return False
+        
+        # Берем последние COMPRESSION_THRESHOLD сообщений для сжатия
+        messages_to_compress = conversations[user_id][-COMPRESSION_THRESHOLD:]
+        
+        # Формируем текст для суммаризации
+        conversation_text = "\n\n".join([
+            f"{'User' if msg['role'] == 'user' else 'Assistant'}: {msg['content']}"
+            for msg in messages_to_compress
+        ])
+        
+        logger.info(f"Compressing {COMPRESSION_THRESHOLD} messages for user {user_id}")
+        
+        # Запрашиваем саммари у Claude
+        response = client.messages.create(
+            model=MODELS_CONFIG['sonnet'],
+            max_tokens=500,
+            temperature=0.3,
+            system=COMPRESSION_SYSTEM_PROMPT,
+            messages=[{
+                "role": "user",
+                "content": f"Create a summary of this conversation:\n\n{conversation_text}"
+            }]
+        )
+        
+        raw_response = response.content[0].text
+        cleaned_json = clean_json_response(raw_response)
+        parsed_json = json.loads(cleaned_json)
+        summary = parsed_json.get('summary', '')
+        
+        if not summary:
+            logger.error("Empty summary received, skipping compression")
+            return False
+        
+        # Заменяем последние COMPRESSION_THRESHOLD сообщений на одно сжатое
+        conversations[user_id] = conversations[user_id][:-COMPRESSION_THRESHOLD]
+        conversations[user_id].append({
+            "role": "assistant",
+            "content": json.dumps({
+                "user_message": "[История сжата]",
+                "ai_message": f"📦 Сжатая история ({COMPRESSION_THRESHOLD} сообщений): {summary}"
+            })
+        })
+        
+        logger.info(f"✓ Successfully compressed conversation for user {user_id}")
+        logger.info(f"Summary: {summary[:100]}...")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error compressing conversation for user {user_id}: {e}", exc_info=True)
+        return False
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     user_id = update.effective_user.id
@@ -145,6 +223,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 🤖 **Обычный режим** (активен по умолчанию)
 Просто напиши мне сообщение, и я отвечу.
+💡 История автоматически сжимается каждые 10 сообщений для экономии токенов.
 
 📱 **Режим /spec**
 Запусти командой /spec для интерактивного сбора технического задания на мобильное приложение.
@@ -330,10 +409,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "content": user_message
     })
     
-    # Ограничиваем историю последними 30 сообщениями
-    if len(conversations[user_id]) > 30:
-        conversations[user_id] = conversations[user_id][-30:]
-    
     try:
         if is_models_mode:
             # Режим сравнения моделей - запрашиваем все три модели
@@ -435,6 +510,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "role": "assistant",
                     "content": cleaned_json
                 })
+                
+                # Проверяем необходимость сжатия истории (только в обычном режиме, после добавления ответа)
+                if not is_spec_mode:
+                    if len(conversations[user_id]) >= COMPRESSION_THRESHOLD:
+                        compression_success = await compress_conversation(user_id)
+                        if compression_success:
+                            await update.message.reply_text("📦 История сжата для экономии токенов")
+                
+                # Ограничиваем историю максимальной длиной
+                if len(conversations[user_id]) > MAX_HISTORY_LENGTH:
+                    conversations[user_id] = conversations[user_id][-MAX_HISTORY_LENGTH:]
                 
                 # Отправляем ответ пользователю
                 ai_message = parsed_json.get('ai_message', '')
