@@ -3,6 +3,7 @@ import logging
 import json
 import re
 import time
+from pathlib import Path
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from anthropic import Anthropic
@@ -24,8 +25,7 @@ if not TELEGRAM_TOKEN or not ANTHROPIC_API_KEY:
 # Инициализация клиента Anthropic
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-# Хранилище разговоров и режимов
-conversations = {}  # {user_id: [messages]}
+# Хранилище режимов (остаются в памяти, т.к. это не критичные данные)
 spec_mode = {}      # {user_id: bool} - режим сбора ТЗ
 models_mode = {}    # {user_id: bool} - режим сравнения моделей
 
@@ -36,9 +36,181 @@ MODELS_CONFIG = {
     'haiku': 'claude-haiku-4-5-20251001'
 }
 
-# Настройки сжатия истории
+# Настройки сжатия истории и хранения
 COMPRESSION_THRESHOLD = 10  # Сжимать каждые 10 сообщений
-MAX_HISTORY_LENGTH = 30     # Максимальная длина истории перед сжатием
+MAX_HISTORY_LENGTH = 30     # Максимальная длина истории
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 МБ в байтах
+CONVERSATIONS_DIR = Path("/root/telegram-bot/conversations")
+
+# ========================================
+# МОДУЛЬ РАБОТЫ С JSON ФАЙЛАМИ
+# ========================================
+
+def ensure_conversations_dir():
+    """Создает директорию для хранения файлов истории, если её нет"""
+    try:
+        CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Conversations directory ready: {CONVERSATIONS_DIR}")
+    except Exception as e:
+        logger.error(f"Failed to create conversations directory: {e}")
+        raise
+
+
+def get_conversation_filepath(user_id: int) -> Path:
+    """Возвращает путь к файлу истории конкретного пользователя"""
+    return CONVERSATIONS_DIR / f"user_{user_id}.json"
+
+
+def load_conversation(user_id: int) -> list:
+    """
+    Загружает историю разговора пользователя из JSON файла.
+    Возвращает список сообщений или пустой список, если файла нет.
+    """
+    filepath = get_conversation_filepath(user_id)
+    
+    try:
+        if not filepath.exists():
+            logger.info(f"No conversation file for user {user_id}, returning empty history")
+            return []
+        
+        # Проверка размера файла
+        file_size = filepath.stat().st_size
+        if file_size > MAX_FILE_SIZE:
+            logger.warning(f"Conversation file for user {user_id} exceeds max size ({file_size} bytes), truncating")
+            # Загружаем и обрезаем до последних MAX_HISTORY_LENGTH сообщений
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                messages = data.get('messages', [])
+                if len(messages) > MAX_HISTORY_LENGTH:
+                    messages = messages[-MAX_HISTORY_LENGTH:]
+                    save_conversation(user_id, messages)  # Сохраняем обрезанную версию
+                return messages
+        
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            messages = data.get('messages', [])
+            logger.info(f"Loaded {len(messages)} messages for user {user_id}")
+            return messages
+            
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in conversation file for user {user_id}: {e}")
+        # Создаем backup поврежденного файла
+        backup_path = filepath.with_suffix('.json.backup')
+        filepath.rename(backup_path)
+        logger.info(f"Corrupted file backed up to {backup_path}")
+        return []
+        
+    except Exception as e:
+        logger.error(f"Error loading conversation for user {user_id}: {e}", exc_info=True)
+        return []
+
+
+def save_conversation(user_id: int, messages: list) -> bool:
+    """
+    Сохраняет историю разговора пользователя в JSON файл.
+    Возвращает True при успехе, False при ошибке.
+    
+    Структура файла:
+    {
+        "user_id": 12345,
+        "last_updated": "2024-12-14T12:00:00",
+        "message_count": 10,
+        "messages": [
+            {"role": "user", "content": "..."},
+            {"role": "assistant", "content": "..."}
+        ]
+    }
+    """
+    filepath = get_conversation_filepath(user_id)
+    
+    try:
+        # Ограничиваем историю максимальной длиной
+        if len(messages) > MAX_HISTORY_LENGTH:
+            messages = messages[-MAX_HISTORY_LENGTH:]
+            logger.info(f"Truncated conversation for user {user_id} to {MAX_HISTORY_LENGTH} messages")
+        
+        data = {
+            "user_id": user_id,
+            "last_updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "message_count": len(messages),
+            "messages": messages
+        }
+        
+        # Сохраняем с отступами для читаемости
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        # Проверяем размер сохраненного файла
+        file_size = filepath.stat().st_size
+        logger.info(f"Saved {len(messages)} messages for user {user_id} ({file_size} bytes)")
+        
+        if file_size > MAX_FILE_SIZE:
+            logger.warning(f"File size exceeds limit after save, will truncate on next load")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error saving conversation for user {user_id}: {e}", exc_info=True)
+        return False
+
+
+def delete_conversation(user_id: int) -> bool:
+    """
+    Удаляет файл истории пользователя.
+    Возвращает True при успехе, False при ошибке.
+    """
+    filepath = get_conversation_filepath(user_id)
+    
+    try:
+        if filepath.exists():
+            filepath.unlink()
+            logger.info(f"Deleted conversation file for user {user_id}")
+            return True
+        else:
+            logger.info(f"No conversation file to delete for user {user_id}")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Error deleting conversation for user {user_id}: {e}", exc_info=True)
+        return False
+
+
+def get_conversation_stats(user_id: int) -> dict:
+    """
+    Возвращает статистику по файлу истории пользователя.
+    """
+    filepath = get_conversation_filepath(user_id)
+    
+    if not filepath.exists():
+        return {
+            "exists": False,
+            "message_count": 0,
+            "file_size": 0
+        }
+    
+    try:
+        file_size = filepath.stat().st_size
+        messages = load_conversation(user_id)
+        
+        return {
+            "exists": True,
+            "message_count": len(messages),
+            "file_size": file_size,
+            "file_size_mb": round(file_size / (1024 * 1024), 2)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting stats for user {user_id}: {e}")
+        return {
+            "exists": True,
+            "message_count": 0,
+            "file_size": 0,
+            "error": str(e)
+        }
+
+# ========================================
+# КОНЕЦ МОДУЛЯ РАБОТЫ С JSON ФАЙЛАМИ
+# ========================================
 
 # Системные промпты
 NORMAL_SYSTEM_PROMPT = """You are a helpful AI assistant. You must ALWAYS respond with ONLY a valid JSON object containing exactly two fields:
@@ -154,15 +326,18 @@ def clean_json_response(text: str) -> str:
 
 async def compress_conversation(user_id: int) -> bool:
     """
-    Сжимает историю разговора, создавая саммари последних N сообщений
-    Возвращает True если сжатие выполнено успешно
+    Сжимает историю разговора, создавая саммари последних N сообщений.
+    Сохраняет результат в JSON файл.
+    Возвращает True если сжатие выполнено успешно.
     """
     try:
-        if user_id not in conversations or len(conversations[user_id]) < COMPRESSION_THRESHOLD:
+        messages = load_conversation(user_id)
+        
+        if len(messages) < COMPRESSION_THRESHOLD:
             return False
         
         # Берем последние COMPRESSION_THRESHOLD сообщений для сжатия
-        messages_to_compress = conversations[user_id][-COMPRESSION_THRESHOLD:]
+        messages_to_compress = messages[-COMPRESSION_THRESHOLD:]
         
         # Формируем текст для суммаризации
         conversation_text = "\n\n".join([
@@ -194,8 +369,8 @@ async def compress_conversation(user_id: int) -> bool:
             return False
         
         # Заменяем последние COMPRESSION_THRESHOLD сообщений на одно сжатое
-        conversations[user_id] = conversations[user_id][:-COMPRESSION_THRESHOLD]
-        conversations[user_id].append({
+        messages = messages[:-COMPRESSION_THRESHOLD]
+        messages.append({
             "role": "assistant",
             "content": json.dumps({
                 "user_message": "[История сжата]",
@@ -203,10 +378,16 @@ async def compress_conversation(user_id: int) -> bool:
             })
         })
         
-        logger.info(f"✓ Successfully compressed conversation for user {user_id}")
-        logger.info(f"Summary: {summary[:100]}...")
+        # Сохраняем обновленную историю в файл
+        save_success = save_conversation(user_id, messages)
         
-        return True
+        if save_success:
+            logger.info(f"✓ Successfully compressed and saved conversation for user {user_id}")
+            logger.info(f"Summary: {summary[:100]}...")
+            return True
+        else:
+            logger.error(f"Failed to save compressed conversation for user {user_id}")
+            return False
         
     except Exception as e:
         logger.error(f"❌ Error compressing conversation for user {user_id}: {e}", exc_info=True)
@@ -238,6 +419,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /models - войти в режим сравнения моделей
 /exit_models - выйти из режима сравнения моделей
 /clear - очистить историю разговора
+/stats - показать статистику истории
 /debug - показать последний JSON ответ"""
     
     await update.message.reply_text(welcome_message, parse_mode='Markdown')
@@ -251,7 +433,7 @@ async def spec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     models_mode[user_id] = False  # Выключаем режим models
     
     # Очищаем историю при входе в режим spec
-    conversations[user_id] = []
+    delete_conversation(user_id)
     
     await update.message.reply_text(
         "📋 Режим сбора технического задания активирован!\n\n"
@@ -312,21 +494,50 @@ async def exit_models_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /clear - очистка истории"""
     user_id = update.effective_user.id
-    conversations[user_id] = []
+    success = delete_conversation(user_id)
     
-    await update.message.reply_text("🗑️ История разговора очищена!")
+    if success:
+        await update.message.reply_text("🗑️ История разговора очищена!")
+    else:
+        await update.message.reply_text("⚠️ Не удалось очистить историю. Попробуйте снова.")
+    
     logger.info(f"User {user_id} cleared conversation history")
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /stats - показать статистику истории"""
+    user_id = update.effective_user.id
+    stats = get_conversation_stats(user_id)
+    
+    if not stats['exists']:
+        await update.message.reply_text("📊 У вас пока нет сохраненной истории.")
+        return
+    
+    message = f"""📊 Статистика вашей истории:
+
+💬 Сообщений: {stats['message_count']}
+📦 Размер файла: {stats['file_size_mb']} МБ
+📁 Максимальный размер: 10 МБ
+📝 Максимум сообщений: {MAX_HISTORY_LENGTH}"""
+    
+    if stats.get('error'):
+        message += f"\n\n⚠️ Ошибка: {stats['error']}"
+    
+    await update.message.reply_text(message)
+    logger.info(f"User {user_id} requested stats")
 
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /debug - показать последний JSON"""
     user_id = update.effective_user.id
     
-    if user_id not in conversations or not conversations[user_id]:
+    messages = load_conversation(user_id)
+    
+    if not messages:
         await update.message.reply_text("Нет сообщений в истории.")
         return
     
-    last_message = conversations[user_id][-1]
+    last_message = messages[-1]
     formatted_json = json.dumps(last_message, indent=2, ensure_ascii=False)
     
     await update.message.reply_text(f"```json\n{formatted_json}\n```", parse_mode='Markdown')
@@ -381,9 +592,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text
     
-    # Инициализация хранилища для нового пользователя
-    if user_id not in conversations:
-        conversations[user_id] = []
+    # Инициализация режимов для нового пользователя
     if user_id not in spec_mode:
         spec_mode[user_id] = False
     if user_id not in models_mode:
@@ -403,8 +612,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         system_prompt = NORMAL_SYSTEM_PROMPT
     
+    # Загружаем историю из файла
+    messages = load_conversation(user_id)
+    
     # Добавляем сообщение пользователя в историю
-    conversations[user_id].append({
+    messages.append({
         "role": "user",
         "content": user_message
     })
@@ -418,7 +630,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for model_key, model_name in MODELS_CONFIG.items():
                 result = await get_claude_response_single(
                     model_name=model_name,
-                    messages=conversations[user_id],
+                    messages=messages,
                     system_prompt=system_prompt
                 )
                 results[model_key] = result
@@ -473,13 +685,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(final_response)
             
             # Добавляем в историю комбинированный ответ (для контекста)
-            conversations[user_id].append({
+            messages.append({
                 "role": "assistant",
                 "content": json.dumps({
                     "user_message": user_message,
                     "ai_message": "Multiple model responses provided"
                 })
             })
+            
+            # Сохраняем историю в файл
+            save_conversation(user_id, messages)
             
         else:
             # Обычный режим или режим SPEC - одна модель
@@ -488,7 +703,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 max_tokens=2048,
                 temperature=0.3,
                 system=system_prompt,
-                messages=conversations[user_id]
+                messages=messages
             )
             
             raw_response = response.content[0].text
@@ -506,21 +721,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"✓ Successfully parsed JSON")
                 
                 # Добавляем ответ ассистента в историю
-                conversations[user_id].append({
+                messages.append({
                     "role": "assistant",
                     "content": cleaned_json
                 })
                 
                 # Проверяем необходимость сжатия истории (только в обычном режиме, после добавления ответа)
                 if not is_spec_mode:
-                    if len(conversations[user_id]) >= COMPRESSION_THRESHOLD:
+                    if len(messages) >= COMPRESSION_THRESHOLD:
                         compression_success = await compress_conversation(user_id)
                         if compression_success:
                             await update.message.reply_text("📦 История сжата для экономии токенов")
+                            # Перезагружаем историю после сжатия
+                            messages = load_conversation(user_id)
                 
-                # Ограничиваем историю максимальной длиной
-                if len(conversations[user_id]) > MAX_HISTORY_LENGTH:
-                    conversations[user_id] = conversations[user_id][-MAX_HISTORY_LENGTH:]
+                # Сохраняем историю в файл
+                save_conversation(user_id, messages)
                 
                 # Отправляем ответ пользователю
                 ai_message = parsed_json.get('ai_message', '')
@@ -563,10 +779,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(error_message)
                 
                 # Добавляем сырой ответ в историю
-                conversations[user_id].append({
+                messages.append({
                     "role": "assistant",
                     "content": raw_response
                 })
+                
+                # Сохраняем историю даже при ошибке
+                save_conversation(user_id, messages)
     
     except Exception as e:
         logger.error(f"❌ Error processing message: {e}", exc_info=True)
@@ -579,6 +798,9 @@ def main():
     """Запуск бота"""
     logger.info("Starting bot...")
     
+    # Создаём директорию для хранения разговоров
+    ensure_conversations_dir()
+    
     # Создаём приложение
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
@@ -589,6 +811,7 @@ def main():
     application.add_handler(CommandHandler("models", models_command))
     application.add_handler(CommandHandler("exit_models", exit_models_command))
     application.add_handler(CommandHandler("clear", clear_command))
+    application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("debug", debug_command))
     
     # Регистрируем обработчик текстовых сообщений
