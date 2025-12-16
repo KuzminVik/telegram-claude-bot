@@ -3,6 +3,8 @@ import logging
 import json
 import re
 import time
+import subprocess
+import asyncio
 from pathlib import Path
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -41,6 +43,75 @@ COMPRESSION_THRESHOLD = 10  # Сжимать каждые 10 сообщений
 MAX_HISTORY_LENGTH = 30     # Максимальная длина истории
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 МБ в байтах
 CONVERSATIONS_DIR = Path("/root/telegram-bot/conversations")
+
+# Путь к MCP серверу погоды
+MCP_WEATHER_SERVER_PATH = "/home/claude/mcp-weather-server/server.js"
+
+# ========================================
+# МОДУЛЬ MCP КЛИЕНТА
+# ========================================
+
+class MCPWeatherClient:
+    """Клиент для работы с MCP Weather Server"""
+    
+    def __init__(self, server_path: str):
+        self.server_path = server_path
+        self.process = None
+        self.request_id = 0
+    
+    async def start(self):
+        """Запускает MCP сервер как subprocess"""
+        try:
+            self.process = await asyncio.create_subprocess_exec(
+                'node', self.server_path,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            logger.info("✓ MCP Weather Server started")
+        except Exception as e:
+            logger.error(f"Failed to start MCP Weather Server: {e}")
+            raise
+    
+    async def stop(self):
+        """Останавливает MCP сервер"""
+        if self.process:
+            self.process.terminate()
+            await self.process.wait()
+            logger.info("MCP Weather Server stopped")
+    
+    async def call_tool(self, tool_name: str, arguments: dict) -> dict:
+        """Вызывает инструмент MCP сервера"""
+        if not self.process:
+            raise RuntimeError("MCP server not started")
+        
+        self.request_id += 1
+        request = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments
+            },
+            "id": self.request_id
+        }
+        
+        # Отправляем запрос
+        request_json = json.dumps(request) + '\n'
+        self.process.stdin.write(request_json.encode())
+        await self.process.stdin.drain()
+        
+        # Читаем ответ
+        response_line = await self.process.stdout.readline()
+        response = json.loads(response_line.decode())
+        
+        if 'error' in response:
+            raise RuntimeError(f"MCP error: {response['error']}")
+        
+        return response.get('result', {})
+
+# Глобальный экземпляр MCP клиента
+mcp_client = None
 
 # ========================================
 # МОДУЛЬ РАБОТЫ С JSON ФАЙЛАМИ
@@ -213,7 +284,14 @@ def get_conversation_stats(user_id: int) -> dict:
 # ========================================
 
 # Системные промпты
-NORMAL_SYSTEM_PROMPT = """You are a helpful AI assistant. You must ALWAYS respond with ONLY a valid JSON object containing exactly two fields:
+NORMAL_SYSTEM_PROMPT = """You are a helpful AI assistant with access to weather information.
+
+TOOLS AVAILABLE:
+You have access to a "get_weather" tool that provides current weather data for any city.
+When a user asks about weather, you MUST use this tool by including a tool_use block in your response.
+
+RESPONSE FORMAT - CRITICAL:
+You must ALWAYS respond with ONLY a valid JSON object containing exactly two fields:
 - "user_message": the exact user's message
 - "ai_message": your response as a string
 
@@ -324,6 +402,39 @@ def clean_json_response(text: str) -> str:
     return text
 
 
+def serialize_message_content(content):
+    """
+    Конвертирует содержимое сообщения Anthropic в JSON-сериализуемый формат.
+    Обрабатывает ToolUseBlock, TextBlock и другие типы контента.
+    """
+    if isinstance(content, str):
+        return content
+    
+    if isinstance(content, list):
+        result = []
+        for item in content:
+            if hasattr(item, 'model_dump'):
+                # Anthropic объекты имеют метод model_dump()
+                result.append(item.model_dump())
+            elif hasattr(item, 'dict'):
+                # Старый метод для pydantic v1
+                result.append(item.dict())
+            elif isinstance(item, dict):
+                result.append(item)
+            else:
+                # Если это простой тип (str, int и т.д.)
+                result.append(item)
+        return result
+    
+    # Если это один объект Anthropic
+    if hasattr(content, 'model_dump'):
+        return content.model_dump()
+    elif hasattr(content, 'dict'):
+        return content.dict()
+    
+    return content
+
+
 async def compress_conversation(user_id: int) -> bool:
     """
     Сжимает историю разговора, создавая саммари последних N сообщений.
@@ -405,6 +516,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🤖 **Обычный режим** (активен по умолчанию)
 Просто напиши мне сообщение, и я отвечу.
 💡 История автоматически сжимается каждые 10 сообщений для экономии токенов.
+🌤️ Могу рассказать о погоде - просто спроси!
 
 📱 **Режим /spec**
 Запусти командой /spec для интерактивного сбора технического задания на мобильное приложение.
@@ -698,20 +810,88 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         else:
             # Обычный режим или режим SPEC - одна модель
+            # В обычном режиме Claude может использовать инструменты
+            tools = None
+            if not is_spec_mode:
+                # Добавляем описание инструмента get_weather
+                tools = [{
+                    "name": "get_weather",
+                    "description": "Получить текущую погоду для указанного города. Использует актуальные данные о температуре, влажности, осадках и ветре.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "city": {
+                                "type": "string",
+                                "description": "Название города (на русском или английском). Например: 'Москва', 'Цюрих', 'London'"
+                            }
+                        },
+                        "required": ["city"]
+                    }
+                }]
+            
             response = client.messages.create(
                 model=MODELS_CONFIG['sonnet'],  # Используем Sonnet по умолчанию
                 max_tokens=2048,
                 temperature=0.3,
                 system=system_prompt,
-                messages=messages
+                messages=messages,
+                tools=tools
             )
             
-            raw_response = response.content[0].text
-            logger.info(f"Raw response: {raw_response[:200]}...")
+            raw_response = response.content[0].text if response.content[0].type == "text" else ""
+            logger.info(f"Raw response type: {response.content[0].type}")
             
             # Получаем информацию о токенах
             input_tokens = response.usage.input_tokens
             output_tokens = response.usage.output_tokens
+            
+            # Проверяем есть ли tool_use в ответе
+            tool_use_blocks = [block for block in response.content if block.type == "tool_use"]
+            
+            if tool_use_blocks and not is_spec_mode:
+                # Claude хочет использовать инструмент
+                for tool_use in tool_use_blocks:
+                    if tool_use.name == "get_weather":
+                        city = tool_use.input.get("city", "")
+                        logger.info(f"Claude wants weather for: {city}")
+                        
+                        try:
+                            # Вызываем MCP сервер
+                            result = await mcp_client.call_tool("get_weather", {"city": city})
+                            weather_data = result['content'][0]['text']
+                            
+                            # Добавляем результат инструмента в историю
+                            messages.append({
+                                "role": "assistant",
+                                "content": serialize_message_content(response.content)
+                            })
+                            messages.append({
+                                "role": "user",
+                                "content": [{
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_use.id,
+                                    "content": weather_data
+                                }]
+                            })
+                            
+                            # Запрашиваем финальный ответ с учетом данных о погоде
+                            final_response = client.messages.create(
+                                model=MODELS_CONFIG['sonnet'],
+                                max_tokens=2048,
+                                temperature=0.3,
+                                system=system_prompt,
+                                messages=messages,
+                                tools=tools
+                            )
+                            
+                            raw_response = final_response.content[0].text
+                            input_tokens += final_response.usage.input_tokens
+                            output_tokens += final_response.usage.output_tokens
+                            
+                        except Exception as e:
+                            logger.error(f"Error calling MCP weather tool: {e}")
+                            await update.message.reply_text(f"⚠️ Ошибка при получении погоды: {str(e)}")
+                            return
             
             # Очищаем и парсим JSON
             cleaned_json = clean_json_response(raw_response)
@@ -796,10 +976,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Запуск бота"""
+    global mcp_client
+    
     logger.info("Starting bot...")
     
     # Создаём директорию для хранения разговоров
     ensure_conversations_dir()
+    
+    # Инициализируем MCP клиент
+    mcp_client = MCPWeatherClient(MCP_WEATHER_SERVER_PATH)
     
     # Создаём приложение
     application = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -816,6 +1001,19 @@ def main():
     
     # Регистрируем обработчик текстовых сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Запускаем MCP сервер при старте
+    async def post_init(application):
+        await mcp_client.start()
+        logger.info("MCP Weather Client initialized")
+    
+    # Останавливаем MCP сервер при выключении
+    async def post_stop(application):
+        await mcp_client.stop()
+        logger.info("MCP Weather Client stopped")
+    
+    application.post_init = post_init
+    application.post_shutdown = post_stop
     
     # Запускаем бота
     logger.info("Bot is running...")
