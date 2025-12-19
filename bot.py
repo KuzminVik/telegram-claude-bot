@@ -50,12 +50,13 @@ COMPRESSION_THRESHOLD = 10
 WEATHER_SUBS_FILE = Path("/root/telegram-bot/weather_subscriptions.json")
 WEATHER_HISTORY_FILE = Path("/root/telegram-bot/weather_history.json")
 
-# Путь к MCP Weather Server
+# Пути к MCP серверам
 MCP_WEATHER_SERVER_PATH = "/home/claude/mcp-weather-server/server.js"
+MCP_NEWS_SERVER_PATH = "/home/claude/mcp-news-server/server.js"
 
 # Глобальные переменные
-user_modes = {}  # user_id -> "normal" | "spec" | "models"
 mcp_weather_client = None
+mcp_news_client = None
 scheduler = None
 bot_instance = None  # Для доступа к боту из scheduled задач
 
@@ -168,6 +169,104 @@ class MCPWeatherClient:
                 return None
             except Exception as e:
                 logger.error(f"Error calling MCP tool: {e}")
+                return None
+
+# =============================================================================
+# MCP News Client
+# =============================================================================
+
+class MCPNewsClient:
+    """Клиент для взаимодействия с MCP News Server"""
+    
+    def __init__(self, server_path: str):
+        self.server_path = server_path
+        self.process = None
+        self.lock = asyncio.Lock()  # Для синхронизации запросов
+        
+    async def start(self):
+        """Запустить MCP сервер"""
+        try:
+            self.process = await asyncio.create_subprocess_exec(
+                'node', self.server_path,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            # Читаем первую строку из stderr (приветствие сервера)
+            if self.process.stderr:
+                greeting = await self.process.stderr.readline()
+                logger.info(f"MCP News Server: {greeting.decode().strip()}")
+            
+            logger.info("✓ MCP News Server started")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to start MCP News Server: {e}")
+            return False
+    
+    async def stop(self):
+        """Остановить MCP сервер"""
+        if self.process:
+            try:
+                self.process.terminate()
+                await asyncio.wait_for(self.process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                self.process.kill()
+                await self.process.wait()
+            logger.info("✓ MCP News Server stopped")
+    
+    async def call_tool(self, tool_name: str, arguments: dict) -> dict:
+        """Вызвать инструмент MCP сервера"""
+        if not self.process:
+            logger.error("MCP News Server is not running")
+            return None
+        
+        async with self.lock:  # Только один запрос одновременно
+            try:
+                request = {
+                    "jsonrpc": "2.0",
+                    "method": "tools/call",
+                    "params": {
+                        "name": tool_name,
+                        "arguments": arguments
+                    },
+                    "id": 1
+                }
+                
+                request_json = json.dumps(request) + '\n'
+                logger.info(f"Sending to MCP News: {request_json.strip()}")
+                
+                # Отправляем запрос
+                self.process.stdin.write(request_json.encode())
+                await self.process.stdin.drain()
+                
+                # Читаем ответ (с таймаутом)
+                response_line = await asyncio.wait_for(
+                    self.process.stdout.readline(),
+                    timeout=10.0
+                )
+                
+                response_text = response_line.decode().strip()
+                logger.info(f"Received from MCP News: {response_text[:200]}...")
+                
+                response = json.loads(response_text)
+                
+                if 'result' in response:
+                    # Извлекаем данные из result.content[0].text
+                    content = response['result']['content'][0]['text']
+                    return json.loads(content)
+                elif 'error' in response:
+                    logger.error(f"MCP News tool call error: {response['error']}")
+                    return None
+                else:
+                    logger.error(f"Unexpected MCP News response format: {response}")
+                    return None
+                    
+            except asyncio.TimeoutError:
+                logger.error("MCP News tool call timeout")
+                return None
+            except Exception as e:
+                logger.error(f"Error calling MCP News tool: {e}")
                 return None
 
 # =============================================================================
@@ -502,10 +601,10 @@ async def generate_comparison_summary(yesterday_data: dict, today_data: dict, ci
 
 async def send_morning_weather():
     """
-    Утренняя рассылка погоды всем подписчикам
+    Утренняя рассылка погоды + новостей всем подписчикам
     Вызывается по расписанию
     """
-    logger.info("🌅 Starting morning weather broadcast")
+    logger.info("🌅 Starting morning weather + news broadcast")
     
     if not bot_instance or not mcp_weather_client:
         logger.error("Bot or MCP client not initialized")
@@ -520,12 +619,25 @@ async def send_morning_weather():
     # Загружаем историю
     history = load_weather_history()
     
+    # Получаем новости один раз для всех пользователей
+    news_result = None
+    if mcp_news_client:
+        logger.info("Fetching morning news...")
+        news_result = await mcp_news_client.call_tool(
+            "get_news",
+            {"category": "общие", "limit": 3}
+        )
+        if news_result:
+            logger.info("✓ News fetched successfully")
+        else:
+            logger.warning("Failed to fetch news")
+    
     for user_id_str, sub_data in subs.items():
         try:
             user_id = int(user_id_str)
             city = sub_data['city']
             
-            logger.info(f"Sending morning weather to user {user_id} for {city}")
+            logger.info(f"Sending morning broadcast to user {user_id} for {city}")
             
             # Получаем текущую погоду + прогноз через MCP
             result = await mcp_weather_client.call_tool(
@@ -562,7 +674,11 @@ async def send_morning_weather():
             }
             
             # Формируем сообщение
-            message = f"🌅 Доброе утро! Погода в городе {city}:\n\n"
+            message = f"🌅 Доброе утро! Ваш утренний дайджест для города {city}:\n\n"
+            message += "━━━━━━━━━━━━━━━━━━━━\n\n"
+            
+            # Добавляем погоду
+            message += "🌤️ ПОГОДА:\n\n"
             message += result['weather_info'] + "\n\n"
             
             # Добавляем прогноз на день если есть
@@ -580,23 +696,41 @@ async def send_morning_weather():
                 logger.info(f"Generating comparison for user {user_id}")
                 
                 comparison = await generate_comparison_summary(yesterday_data, today_data, city)
-                message += f"📈 Изменения:\n{comparison}"
+                message += f"📈 Изменения:\n{comparison}\n\n"
             else:
-                message += "📊 Первое утреннее сообщение (нет данных за вчера для сравнения)"
+                message += "📊 Первое утреннее сообщение (нет данных за вчера)\n\n"
+            
+            message += "━━━━━━━━━━━━━━━━━━━━\n\n"
+            
+            # Добавляем новости
+            if news_result and 'items' in news_result:
+                message += "📰 ГЛАВНЫЕ НОВОСТИ:\n\n"
+                for idx, item in enumerate(news_result['items'][:3], 1):
+                    message += f"{idx}. {item['title']}\n"
+                    # Короткое описание (первые 100 символов)
+                    desc = item['description'][:100]
+                    if len(item['description']) > 100:
+                        desc += '...'
+                    message += f"   {desc}\n\n"
+            else:
+                message += "📰 Новости временно недоступны\n\n"
+            
+            message += "━━━━━━━━━━━━━━━━━━━━\n"
+            message += "Хорошего дня! ☀️"
             
             # Отправляем сообщение
             await bot_instance.send_message(chat_id=user_id, text=message)
-            logger.info(f"✓ Sent morning weather to user {user_id}")
+            logger.info(f"✓ Sent morning broadcast to user {user_id}")
             
             # Обновляем историю - сегодняшние данные становятся вчерашними
             history[user_id_str] = today_data
             
         except Exception as e:
-            logger.error(f"Error sending morning weather to user {user_id_str}: {e}")
+            logger.error(f"Error sending morning broadcast to user {user_id_str}: {e}")
     
     # Сохраняем обновлённую историю
     save_weather_history(history)
-    logger.info("🌅 Morning weather broadcast completed")
+    logger.info("🌅 Morning weather + news broadcast completed")
 
 # =============================================================================
 # Вспомогательные функции
@@ -749,121 +883,19 @@ async def send_long_message(update: Update, text: str):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     await update.message.reply_text(
-        "👋 Привет! Я бот с интеграцией Claude AI.\n\n"
-        "🎯 Доступные режимы:\n"
-        "• Обычный режим - просто пишите мне вопросы\n"
-        "• /spec - режим сбора технического задания\n"
-        "• /models - сравнение трёх моделей Claude\n\n"
+        "👋 Привет! Я бот с интеграцией Claude AI, погодой и новостями.\n\n"
+        "💬 Просто пишите мне вопросы - я отвечу используя Claude AI\n\n"
         "🌤️ Погода:\n"
         "• /weather_subscribe Город - подписаться на утреннюю погоду\n"
         "• /weather_unsubscribe - отписаться от погоды\n"
         "• /weather_list - показать подписку\n\n"
+        "📰 Дайджест:\n"
+        "• /morning_digest - получить погоду + новости прямо сейчас\n\n"
         "📊 Управление:\n"
         "• /clear - очистить историю\n"
         "• /stats - показать статистику\n"
         "• /debug - показать последнее сообщение"
     )
-
-async def spec_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Войти в режим сбора технического задания"""
-    user_id = update.effective_user.id
-    user_modes[user_id] = "spec"
-    
-    # Очищаем историю при входе в режим spec
-    delete_conversation(user_id)
-    
-    logger.info(f"User {user_id} entered spec mode")
-    
-    await update.message.reply_text(
-        "📋 Режим сбора ТЗ активирован!\n\n"
-        "Я задам вам несколько вопросов о вашем проекте мобильного приложения, "
-        "после чего сформирую полное техническое задание.\n\n"
-        "Для выхода из режима используйте /exit_spec"
-    )
-    
-    # Отправляем первое сообщение от Claude
-    try:
-        messages = []
-        system_prompt = (
-            "Ты - опытный бизнес-аналитик, который помогает собрать требования для мобильного приложения. "
-            "Твоя задача - задавать уточняющие вопросы один за другим, чтобы собрать полную информацию. "
-            "После 8-12 обменов сообщениями, когда будет собрана достаточная информация, "
-            "создай подробное техническое задание в формате JSON с полями: "
-            "название_проекта, описание, целевая_аудитория, основные_функции, технические_требования, дизайн, сроки. "
-            "Начни с приветствия и первого вопроса о проекте."
-        )
-        
-        response = anthropic_client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1000,
-            system=system_prompt,
-            messages=[
-                {
-                    "role": "user",
-                    "content": "Привет! Я хочу создать мобильное приложение."
-                }
-            ]
-        )
-        
-        ai_response = response.content[0].text
-        
-        # Сохраняем в историю
-        messages.append({
-            "role": "user",
-            "content": "Привет! Я хочу создать мобильное приложение."
-        })
-        messages.append({
-            "role": "assistant",
-            "content": json.dumps({
-                "user_message": "Привет! Я хочу создать мобильное приложение.",
-                "ai_message": ai_response
-            }, ensure_ascii=False)
-        })
-        save_conversation(user_id, messages)
-        
-        await update.message.reply_text(ai_response)
-        
-    except Exception as e:
-        logger.error(f"Error in spec_mode: {e}")
-        await update.message.reply_text(f"Ошибка: {str(e)}")
-
-async def exit_spec_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выйти из режима сбора ТЗ"""
-    user_id = update.effective_user.id
-    
-    if user_id in user_modes and user_modes[user_id] == "spec":
-        user_modes[user_id] = "normal"
-        logger.info(f"User {user_id} exited spec mode")
-        await update.message.reply_text("✅ Вы вышли из режима сбора ТЗ")
-    else:
-        await update.message.reply_text("❌ Вы не находитесь в режиме сбора ТЗ")
-
-async def models_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Войти в режим сравнения моделей"""
-    user_id = update.effective_user.id
-    user_modes[user_id] = "models"
-    
-    logger.info(f"User {user_id} entered models mode")
-    
-    await update.message.reply_text(
-        "🔄 Режим сравнения моделей активирован!\n\n"
-        "Отправьте вопрос, и я покажу ответы от трёх разных моделей Claude:\n"
-        "• Claude Opus 4\n"
-        "• Claude Sonnet 4.5\n"
-        "• Claude Haiku 4.5\n\n"
-        "Для выхода используйте /exit_models"
-    )
-
-async def exit_models_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выйти из режима сравнения моделей"""
-    user_id = update.effective_user.id
-    
-    if user_id in user_modes and user_modes[user_id] == "models":
-        user_modes[user_id] = "normal"
-        logger.info(f"User {user_id} exited models mode")
-        await update.message.reply_text("✅ Вы вышли из режима сравнения моделей")
-    else:
-        await update.message.reply_text("❌ Вы не находитесь в режиме сравнения моделей")
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Очистить историю разговора"""
@@ -909,55 +941,44 @@ async def weather_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Подписаться на утреннюю погоду"""
     user_id = update.effective_user.id
     
-    logger.info(f"[DEBUG 1] weather_subscribe called for user {user_id}")
+    logger.info(f"weather_subscribe called for user {user_id}")
     
     if not context.args:
-        logger.info("[DEBUG 2] No city provided")
+        logger.info("No city provided")
         await update.message.reply_text("❌ Укажите город!\n\nИспользование: /weather_subscribe Москва")
         return
     
     city = ' '.join(context.args)
-    logger.info(f"[DEBUG 3] City: {city}")
+    logger.info(f"City: {city}")
     
     try:
         await update.message.reply_text(f"⏳ Получаю погоду для города {city}...")
-        logger.info("[DEBUG 4] Sent 'getting weather' message")
-        
-        logger.info(f"[DEBUG 5] mcp_weather_client exists: {mcp_weather_client is not None}")
         
         if not mcp_weather_client:
-            logger.error("[DEBUG 6] mcp_weather_client is None!")
+            logger.error("mcp_weather_client is None!")
             await update.message.reply_text("❌ MCP Weather сервер недоступен")
             return
         
-        logger.info(f"[DEBUG 7] Calling MCP tool for city: {city}")
         result = await mcp_weather_client.call_tool("get_weather", {"city": city, "include_forecast": True})
-        logger.info(f"[DEBUG 8] MCP result: {result}")
         
         if not result:
-            logger.error("[DEBUG 9] MCP returned None")
-            await update.message.reply_text(f"❌ MCP вернул None для города {city}")
+            logger.error("MCP returned None")
+            await update.message.reply_text(f"❌ Не удалось получить погоду для города {city}")
             return
         
         if 'weather_info' not in result:
-            logger.error(f"[DEBUG 10] No weather_info in result: {result}")
-            await update.message.reply_text(f"❌ Нет weather_info в результате")
+            logger.error(f"No weather_info in result: {result}")
+            await update.message.reply_text(f"❌ Нет данных о погоде")
             return
         
-        logger.info("[DEBUG 11] Got weather_info, creating yesterday data")
-        
         # Создаём симулированные вчерашние данные
-        result['city'] = city  # Добавляем город в результат
+        result['city'] = city
         yesterday_data = simulate_yesterday_weather(result)
-        
-        logger.info("[DEBUG 12] Saving to history")
         
         # Сохраняем в историю
         history = load_weather_history()
         history[str(user_id)] = yesterday_data
         save_weather_history(history)
-        
-        logger.info("[DEBUG 13] Saving subscription")
         
         # Сохраняем подписку
         subs = load_weather_subscriptions()
@@ -967,8 +988,6 @@ async def weather_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "timezone": "Europe/Moscow"
         }
         save_weather_subscriptions(subs)
-        
-        logger.info("[DEBUG 14] Sending success message")
         
         await update.message.reply_text(
             f"✅ Подписка на утреннюю погоду активирована!\n\n"
@@ -981,7 +1000,7 @@ async def weather_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"User {user_id} subscribed to weather for {city}")
         
     except Exception as e:
-        logger.error(f"[DEBUG ERROR] Exception in weather_subscribe: {e}", exc_info=True)
+        logger.error(f"Exception in weather_subscribe: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка при создании подписки: {str(e)}")
 
 async def weather_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1042,6 +1061,77 @@ async def weather_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in weather_list: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
+async def morning_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить утренний дайджест: погода + новости"""
+    user_id = update.effective_user.id
+    
+    try:
+        # Проверяем есть ли подписка на погоду
+        subs = load_weather_subscriptions()
+        
+        if str(user_id) not in subs:
+            await update.message.reply_text(
+                "❌ Сначала подпишитесь на погоду!\n\n"
+                "Используйте: /weather_subscribe Город"
+            )
+            return
+        
+        city = subs[str(user_id)]['city']
+        
+        await update.message.reply_text(f"⏳ Получаю утренний дайджест для {city}...")
+        
+        # Получаем погоду
+        weather_result = None
+        if mcp_weather_client:
+            weather_result = await mcp_weather_client.call_tool(
+                "get_weather",
+                {"city": city, "include_forecast": True}
+            )
+        
+        # Получаем новости
+        news_result = None
+        if mcp_news_client:
+            news_result = await mcp_news_client.call_tool(
+                "get_news",
+                {"category": "общие", "limit": 3}
+            )
+        
+        # Формируем дайджест
+        digest = f"🌅 Утренний дайджест для {city}\n\n"
+        digest += "━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        # Добавляем погоду
+        if weather_result and 'weather_info' in weather_result:
+            digest += "🌤️ ПОГОДА:\n\n"
+            digest += weather_result['weather_info'] + "\n\n"
+            
+            if 'forecast' in weather_result:
+                fc = weather_result['forecast']
+                digest += f"📊 Прогноз на день:\n"
+                digest += f"🔺 Макс: {fc['temp_max']}°C\n"
+                digest += f"🔻 Мин: {fc['temp_min']}°C\n"
+                digest += f"💧 Осадки: {fc['precipitation_probability']}%\n\n"
+        else:
+            digest += "❌ Не удалось получить погоду\n\n"
+        
+        digest += "━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        # Добавляем новости
+        if news_result and 'news_text' in news_result:
+            digest += "📰 НОВОСТИ:\n\n"
+            digest += news_result['news_text'] + "\n\n"
+        else:
+            digest += "❌ Не удалось получить новости\n\n"
+        
+        digest += "━━━━━━━━━━━━━━━━━━━━"
+        
+        await send_long_message(update, digest)
+        logger.info(f"Sent morning digest to user {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Error in morning_digest: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка при получении дайджеста: {str(e)}")
+
 # =============================================================================
 # Обработчик сообщений
 # =============================================================================
@@ -1053,22 +1143,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"Received message from {user_id}: {user_message[:50]}...")
     
-    # Определяем режим пользователя
-    mode = user_modes.get(user_id, "normal")
-    
     # Загружаем историю из файла
     messages = load_conversation(user_id)
     
     try:
-        if mode == "spec":
-            # Режим сбора ТЗ
-            await handle_spec_mode(update, user_id, user_message, messages)
-        elif mode == "models":
-            # Режим сравнения моделей
-            await handle_models_mode(update, user_id, user_message, messages)
-        else:
-            # Обычный режим
-            await handle_normal_mode(update, user_id, user_message, messages)
+        # Обрабатываем в обычном режиме (единственный режим теперь)
+        await handle_normal_mode(update, user_id, user_message, messages)
             
     except Exception as e:
         logger.error(f"Error handling message: {e}")
@@ -1083,7 +1163,7 @@ async def handle_normal_mode(update: Update, user_id: int, user_message: str, me
         "content": user_message
     })
     
-    # Описание инструмента get_weather для Claude
+    # Описание инструментов для Claude
     tools = [
         {
             "name": "get_weather",
@@ -1097,6 +1177,27 @@ async def handle_normal_mode(update: Update, user_id: int, user_message: str, me
                     }
                 },
                 "required": ["city"]
+            }
+        },
+        {
+            "name": "get_news",
+            "description": "Get latest news from Russian RSS feeds. Use this when the user asks about news, current events, or headlines. Categories: общие (general), технологии (tech), бизнес (business)",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "News category: общие, технологии, or бизнес",
+                        "enum": ["общие", "технологии", "бизнес"]
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Number of news items to return (1-10)",
+                        "minimum": 1,
+                        "maximum": 10
+                    }
+                },
+                "required": []
             }
         }
     ]
@@ -1120,14 +1221,21 @@ async def handle_normal_mode(update: Update, user_id: int, user_message: str, me
             text_response += block.text
     
     if tool_use_block:
-        # Claude хочет использовать инструмент погоды
+        # Claude хочет использовать один из инструментов
         logger.info(f"Claude wants to use tool: {tool_use_block.name} with args: {tool_use_block.input}")
         
-        # Вызываем MCP Weather
-        tool_result = await mcp_weather_client.call_tool(
-            tool_use_block.name,
-            tool_use_block.input
-        )
+        # Выбираем нужный MCP клиент
+        tool_result = None
+        if tool_use_block.name == "get_weather":
+            tool_result = await mcp_weather_client.call_tool(
+                tool_use_block.name,
+                tool_use_block.input
+            )
+        elif tool_use_block.name == "get_news":
+            tool_result = await mcp_news_client.call_tool(
+                tool_use_block.name,
+                tool_use_block.input
+            )
         
         if tool_result:
             # Добавляем ответ Claude с tool_use в историю
@@ -1207,121 +1315,13 @@ async def handle_normal_mode(update: Update, user_id: int, user_message: str, me
         if compressed:
             await update.message.reply_text("📦 История сжата для экономии токенов")
 
-async def handle_spec_mode(update: Update, user_id: int, user_message: str, messages: list):
-    """Обработка режима сбора ТЗ"""
-    
-    messages.append({
-        "role": "user",
-        "content": user_message
-    })
-    
-    system_prompt = (
-        "Ты - опытный бизнес-аналитик, который помогает собрать требования для мобильного приложения. "
-        "Задавай уточняющие вопросы один за другим. "
-        "После 8-12 обменов, когда информации достаточно, создай подробное ТЗ в JSON формате с полями: "
-        "название_проекта, описание, целевая_аудитория, основные_функции, технические_требования, дизайн, сроки. "
-        "ВАЖНО: Отвечай ТОЛЬКО в JSON формате: {\"user_message\": \"сообщение пользователя\", \"ai_message\": \"твой ответ\"}"
-    )
-    
-    response = anthropic_client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=2000,
-        system=system_prompt,
-        messages=messages
-    )
-    
-    ai_response = response.content[0].text
-    
-    # Парсим JSON ответ
-    try:
-        cleaned_response = clean_json_response(ai_response)
-        response_json = json.loads(cleaned_response)
-        actual_response = response_json.get('ai_message', ai_response)
-    except:
-        actual_response = ai_response
-    
-    messages.append({
-        "role": "assistant",
-        "content": ai_response
-    })
-    
-    # Сохраняем без сжатия в режиме spec
-    save_conversation(user_id, messages)
-    
-    await send_long_message(update, actual_response)
-    
-    # Проверяем, закончил ли Claude сбор ТЗ (если в ответе есть JSON с полями ТЗ)
-    if all(key in ai_response for key in ['название_проекта', 'описание', 'целевая_аудитория']):
-        user_modes[user_id] = "normal"
-        await update.message.reply_text(
-            "\n\n✅ Сбор ТЗ завершён! Вы автоматически вернулись в обычный режим."
-        )
-
-async def handle_models_mode(update: Update, user_id: int, user_message: str, messages: list):
-    """Обработка режима сравнения моделей"""
-    
-    await update.message.reply_text("⏳ Опрашиваю три модели, это займёт некоторое время...")
-    
-    models = [
-        ("Claude Opus 4", "claude-opus-4-20250514"),
-        ("Claude Sonnet 4.5", "claude-sonnet-4-20250514"),
-        ("Claude Haiku 4.5", "claude-haiku-4-20251001")
-    ]
-    
-    messages.append({
-        "role": "user",
-        "content": user_message
-    })
-    
-    responses_text = f"🔄 Сравнение моделей для вопроса:\n\"{user_message}\"\n\n"
-    
-    for model_name, model_id in models:
-        try:
-            import time
-            start_time = time.time()
-            
-            response = anthropic_client.messages.create(
-                model=model_id,
-                max_tokens=1500,
-                messages=messages
-            )
-            
-            end_time = time.time()
-            duration = round(end_time - start_time, 2)
-            
-            ai_response = response.content[0].text
-            
-            responses_text += f"━━━━━━━━━━━━━━━━━━━━\n"
-            responses_text += f"🤖 {model_name}\n"
-            responses_text += f"⏱️ Время: {duration}s\n"
-            responses_text += f"📊 Токены: in={response.usage.input_tokens} | out={response.usage.output_tokens}\n\n"
-            responses_text += f"{ai_response}\n\n"
-            
-        except Exception as e:
-            responses_text += f"━━━━━━━━━━━━━━━━━━━━\n"
-            responses_text += f"🤖 {model_name}\n"
-            responses_text += f"❌ Ошибка: {str(e)}\n\n"
-    
-    # Сохраняем последний ответ (от Sonnet) в историю
-    messages.append({
-        "role": "assistant",
-        "content": json.dumps({
-            "user_message": user_message,
-            "ai_message": responses_text
-        }, ensure_ascii=False)
-    })
-    
-    save_conversation(user_id, messages)
-    
-    await send_long_message(update, responses_text)
-
 # =============================================================================
 # Главная функция
 # =============================================================================
 
 def main():
     """Запуск бота"""
-    global mcp_weather_client, scheduler, bot_instance
+    global mcp_weather_client, mcp_news_client, scheduler, bot_instance
     
     # Создаём директорию для историй
     ensure_conversations_dir()
@@ -1331,16 +1331,13 @@ def main():
     
     # Регистрация обработчиков команд
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("spec", spec_mode))
-    application.add_handler(CommandHandler("exit_spec", exit_spec_mode))
-    application.add_handler(CommandHandler("models", models_mode))
-    application.add_handler(CommandHandler("exit_models", exit_models_mode))
     application.add_handler(CommandHandler("clear", clear_history))
     application.add_handler(CommandHandler("stats", show_stats))
     application.add_handler(CommandHandler("debug", debug_history))
     application.add_handler(CommandHandler("weather_subscribe", weather_subscribe))
     application.add_handler(CommandHandler("weather_unsubscribe", weather_unsubscribe))
     application.add_handler(CommandHandler("weather_list", weather_list))
+    application.add_handler(CommandHandler("morning_digest", morning_digest))
 
     # Временная команда для теста утренней рассылки
     async def test_morning_weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1356,7 +1353,7 @@ def main():
     
     # Инициализация MCP и планировщика при старте приложения
     async def post_init(app):
-        global mcp_weather_client, scheduler, bot_instance
+        global mcp_weather_client, mcp_news_client, scheduler, bot_instance
         
         # Сохраняем экземпляр бота для использования в scheduled задачах
         bot_instance = app.bot
@@ -1368,6 +1365,14 @@ def main():
             logger.info("✓ MCP Weather Client initialized")
         else:
             logger.error("✗ Failed to start MCP Weather Client")
+        
+        # Запускаем MCP News Client
+        logger.info("Starting MCP News Client...")
+        mcp_news_client = MCPNewsClient(MCP_NEWS_SERVER_PATH)
+        if await mcp_news_client.start():
+            logger.info("✓ MCP News Client initialized")
+        else:
+            logger.error("✗ Failed to start MCP News Client")
         
         # Инициализация планировщика
         scheduler = AsyncIOScheduler()
@@ -1388,6 +1393,8 @@ def main():
     async def post_shutdown(app):
         if mcp_weather_client:
             await mcp_weather_client.stop()
+        if mcp_news_client:
+            await mcp_news_client.stop()
         if scheduler:
             scheduler.shutdown()
     
