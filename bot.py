@@ -54,9 +54,19 @@ WEATHER_HISTORY_FILE = Path("/root/telegram-bot/weather_history.json")
 MCP_WEATHER_SERVER_PATH = "/home/claude/mcp-weather-server/server.js"
 MCP_NEWS_SERVER_PATH = "/home/claude/mcp-news-server/server.js"
 
+# SSH конфигурация для mobile-mcp
+MCP_MOBILE_SSH_HOST = "localhost"
+MCP_MOBILE_SSH_PORT = 2222
+MCP_MOBILE_SSH_USER = "vkuzmin"
+MCP_MOBILE_SSH_KEY = "/root/.ssh/server_to_mac"
+MCP_MOBILE_NODE_PATH = "/Users/vkuzmin/.nvm/versions/node/v20.19.6/bin/node"
+MCP_MOBILE_SERVER_PATH = "/Users/vkuzmin/mcp-servers/mobile-mcp/lib/index.js"
+MCP_MOBILE_START_EMULATOR_SCRIPT = "/Users/vkuzmin/start-emulator.sh"
+
 # Глобальные переменные
 mcp_weather_client = None
 mcp_news_client = None
+mcp_mobile_client = None
 scheduler = None
 bot_instance = None  # Для доступа к боту из scheduled задач
 
@@ -267,6 +277,125 @@ class MCPNewsClient:
                 return None
             except Exception as e:
                 logger.error(f"Error calling MCP News tool: {e}")
+                return None
+
+# =============================================================================
+# MCP Mobile Client (через SSH)
+# =============================================================================
+
+class MCPMobileClient:
+    """Клиент для взаимодействия с MCP Mobile Server через SSH"""
+    
+    def __init__(self, ssh_host: str, ssh_port: int, ssh_user: str, ssh_key: str, server_path: str):
+        self.ssh_host = ssh_host
+        self.ssh_port = ssh_port
+        self.ssh_user = ssh_user
+        self.ssh_key = ssh_key
+        self.server_path = server_path
+        self.process = None
+        self.lock = asyncio.Lock()
+        
+    async def start(self):
+        """Запустить MCP сервер через SSH"""
+        try:
+            # SSH команда для запуска mobile-mcp на Mac
+            # Устанавливаем ANDROID_HOME и PATH перед запуском node
+            ssh_command = [
+                'ssh',
+                '-i', self.ssh_key,
+                '-p', str(self.ssh_port),
+                '-o', 'StrictHostKeyChecking=no',
+                '-o', 'UserKnownHostsFile=/dev/null',
+                f'{self.ssh_user}@{self.ssh_host}',
+                f'export ANDROID_HOME=/Users/vkuzmin/Library/android/sdk && export PATH=$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH && /Users/vkuzmin/.nvm/versions/node/v20.19.6/bin/node {self.server_path}'
+            ]
+            
+            self.process = await asyncio.create_subprocess_exec(
+                *ssh_command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            # Читаем первую строку из stdout (приветствие MCP сервера)
+            try:
+                greeting = await asyncio.wait_for(
+                    self.process.stdout.readline(),
+                    timeout=5.0
+                )
+                logger.info(f"MCP Mobile Server: {greeting.decode().strip()}")
+            except asyncio.TimeoutError:
+                logger.warning("No greeting from MCP Mobile Server")
+            
+            logger.info("✓ MCP Mobile Server started (via SSH)")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to start MCP Mobile Server: {e}")
+            return False
+    
+    async def stop(self):
+        """Остановить MCP сервер"""
+        if self.process:
+            try:
+                self.process.terminate()
+                await asyncio.wait_for(self.process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                self.process.kill()
+                await self.process.wait()
+            logger.info("✓ MCP Mobile Server stopped")
+    
+    async def call_tool(self, tool_name: str, arguments: dict) -> dict:
+        """Вызвать инструмент MCP сервера"""
+        if not self.process:
+            logger.error("MCP Mobile Server is not running")
+            return None
+        
+        async with self.lock:
+            try:
+                request = {
+                    "jsonrpc": "2.0",
+                    "method": "tools/call",
+                    "params": {
+                        "name": tool_name,
+                        "arguments": arguments
+                    },
+                    "id": 1
+                }
+                
+                request_json = json.dumps(request) + '\n'
+                logger.info(f"Sending to MCP Mobile: {request_json.strip()}")
+                
+                # Отправляем запрос
+                self.process.stdin.write(request_json.encode())
+                await self.process.stdin.drain()
+                
+                # Читаем ответ (с таймаутом)
+                response_line = await asyncio.wait_for(
+                    self.process.stdout.readline(),
+                    timeout=15.0  # Больше timeout для mobile операций
+                )
+                
+                response_text = response_line.decode().strip()
+                logger.info(f"Received from MCP Mobile: {response_text[:200]}...")
+                
+                response = json.loads(response_text)
+                
+                if 'result' in response:
+                    # Извлекаем данные из result.content[0].text
+                    content = response['result']['content'][0]['text']
+                    return json.loads(content)
+                elif 'error' in response:
+                    logger.error(f"MCP Mobile tool call error: {response['error']}")
+                    return None
+                else:
+                    logger.error(f"Unexpected MCP Mobile response format: {response}")
+                    return None
+                    
+            except asyncio.TimeoutError:
+                logger.error("MCP Mobile tool call timeout")
+                return None
+            except Exception as e:
+                logger.error(f"Error calling MCP Mobile tool: {e}")
                 return None
 
 # =============================================================================
@@ -883,7 +1012,7 @@ async def send_long_message(update: Update, text: str):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     await update.message.reply_text(
-        "👋 Привет! Я бот с интеграцией Claude AI, погодой и новостями.\n\n"
+        "👋 Привет! Я бот с интеграцией Claude AI, погодой, новостями и управлением Android эмулятором.\n\n"
         "💬 Просто пишите мне вопросы - я отвечу используя Claude AI\n\n"
         "🌤️ Погода:\n"
         "• /weather_subscribe Город - подписаться на утреннюю погоду\n"
@@ -891,6 +1020,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /weather_list - показать подписку\n\n"
         "📰 Дайджест:\n"
         "• /morning_digest - получить погоду + новости прямо сейчас\n\n"
+        "📱 Мобильные устройства:\n"
+        "• /mobile_devices - показать доступные устройства\n"
+        "• /start_emulator - запустить Android эмулятор\n\n"
         "📊 Управление:\n"
         "• /clear - очистить историю\n"
         "• /stats - показать статистику\n"
@@ -933,7 +1065,7 @@ async def debug_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     last_message = messages[-1]
-    debug_text = f"🐛 Последнее сообщение:\n\n```json\n{json.dumps(last_message, ensure_ascii=False, indent=2)}\n```"
+    debug_text = f"🛠 Последнее сообщение:\n\n```json\n{json.dumps(last_message, ensure_ascii=False, indent=2)}\n```"
     
     await update.message.reply_text(debug_text, parse_mode='Markdown')
 
@@ -1132,6 +1264,109 @@ async def morning_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in morning_digest: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка при получении дайджеста: {str(e)}")
 
+async def mobile_devices(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать доступные мобильные устройства"""
+    user_id = update.effective_user.id
+    
+    try:
+        await update.message.reply_text("⏳ Получаю список устройств...")
+        
+        if not mcp_mobile_client:
+            await update.message.reply_text("❌ MCP Mobile сервер недоступен")
+            return
+        
+        # Вызываем инструмент для получения списка устройств
+        result = await mcp_mobile_client.call_tool(
+            "mobile_list_available_devices",
+            {"noParams": {}}
+        )
+        
+        if not result or 'devices' not in result:
+            await update.message.reply_text("❌ Не удалось получить список устройств")
+            return
+        
+        devices = result['devices']
+        
+        if not devices:
+            await update.message.reply_text("📱 Нет доступных устройств")
+            return
+        
+        # Формируем красивое сообщение
+        message = "📱 Доступные устройства:\n\n"
+        
+        for idx, device in enumerate(devices, 1):
+            message += f"{idx}. **{device['name']}**\n"
+            message += f"   ID: `{device['id']}`\n"
+            message += f"   Платформа: {device['platform']}\n"
+            message += f"   Тип: {device['type']}\n"
+            message += f"   Версия: {device['version']}\n"
+            message += f"   Статус: {'🟢 ' if device['state'] == 'online' else '🔴 '}{device['state']}\n\n"
+        
+        await update.message.reply_text(message, parse_mode='Markdown')
+        logger.info(f"Sent device list to user {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Error in mobile_devices: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+async def start_emulator(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запустить Android эмулятор"""
+    user_id = update.effective_user.id
+    
+    try:
+        await update.message.reply_text("⏳ Проверяю статус эмулятора...")
+        
+        # Выполняем скрипт запуска эмулятора через SSH
+        process = await asyncio.create_subprocess_exec(
+            'ssh',
+            '-i', MCP_MOBILE_SSH_KEY,
+            '-p', str(MCP_MOBILE_SSH_PORT),
+            '-o', 'StrictHostKeyChecking=no',
+            '-o', 'UserKnownHostsFile=/dev/null',
+            f'{MCP_MOBILE_SSH_USER}@{MCP_MOBILE_SSH_HOST}',
+            MCP_MOBILE_START_EMULATOR_SCRIPT,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode != 0:
+            error_msg = stderr.decode().strip()
+            logger.error(f"Emulator start script failed: {error_msg}")
+            await update.message.reply_text(f"❌ Ошибка запуска: {error_msg}")
+            return
+        
+        # Парсим JSON ответ
+        result = json.loads(stdout.decode().strip())
+        
+        status = result.get('status', 'unknown')
+        message = result.get('message', 'Неизвестный статус')
+        device_id = result.get('device_id', '')
+        
+        if status == 'already_running':
+            await update.message.reply_text(
+                f"✅ {message}\n\n"
+                f"📱 ID устройства: `{device_id}`"
+            )
+        elif status == 'started':
+            await update.message.reply_text(
+                f"🚀 {message}\n\n"
+                f"📱 ID устройства: `{device_id}`\n\n"
+                f"Эмулятор готов к работе!"
+            )
+        else:
+            await update.message.reply_text(f"❌ {message}")
+        
+        logger.info(f"Emulator command executed for user {user_id}: {status}")
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse emulator script output: {e}")
+        await update.message.reply_text("❌ Ошибка при обработке ответа от эмулятора")
+    except Exception as e:
+        logger.error(f"Error in start_emulator: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
 # =============================================================================
 # Обработчик сообщений
 # =============================================================================
@@ -1155,7 +1390,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Произошла ошибка: {str(e)}")
 
 async def handle_normal_mode(update: Update, user_id: int, user_message: str, messages: list):
-    """Обработка обычного режима с поддержкой MCP Weather"""
+    """Обработка обычного режима с поддержкой MCP Weather, News и Mobile"""
     
     # Добавляем сообщение пользователя
     messages.append({
@@ -1199,6 +1434,34 @@ async def handle_normal_mode(update: Update, user_id: int, user_message: str, me
                 },
                 "required": []
             }
+        },
+        {
+            "name": "mobile_list_available_devices",
+            "description": "List all available mobile devices including Android emulators and iOS simulators. Use this when the user asks about available devices, wants to see what devices are connected, or needs to select a device.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "noParams": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                },
+                "required": ["noParams"]
+            }
+        },
+        {
+            "name": "mobile_start_emulator",
+            "description": "Start the Android emulator if it's not running, or check if it's already running. Use this when the user wants to start/launch the emulator or when they ask if the emulator is ready.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "noParams": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                },
+                "required": ["noParams"]
+            }
         }
     ]
     
@@ -1236,6 +1499,41 @@ async def handle_normal_mode(update: Update, user_id: int, user_message: str, me
                 tool_use_block.name,
                 tool_use_block.input
             )
+        elif tool_use_block.name == "mobile_list_available_devices":
+            tool_result = await mcp_mobile_client.call_tool(
+                tool_use_block.name,
+                tool_use_block.input
+            )
+        elif tool_use_block.name == "mobile_start_emulator":
+            # Запускаем эмулятор через SSH скрипт
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    'ssh',
+                    '-i', MCP_MOBILE_SSH_KEY,
+                    '-p', str(MCP_MOBILE_SSH_PORT),
+                    '-o', 'StrictHostKeyChecking=no',
+                    '-o', 'UserKnownHostsFile=/dev/null',
+                    f'{MCP_MOBILE_SSH_USER}@{MCP_MOBILE_SSH_HOST}',
+                    MCP_MOBILE_START_EMULATOR_SCRIPT,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                
+                stdout, stderr = await process.communicate()
+                
+                if process.returncode == 0:
+                    tool_result = json.loads(stdout.decode().strip())
+                else:
+                    tool_result = {
+                        "status": "error",
+                        "message": f"Ошибка выполнения скрипта: {stderr.decode().strip()}"
+                    }
+            except Exception as e:
+                logger.error(f"Error calling start emulator script: {e}")
+                tool_result = {
+                    "status": "error",
+                    "message": f"Ошибка: {str(e)}"
+                }
         
         if tool_result:
             # Добавляем ответ Claude с tool_use в историю
@@ -1282,7 +1580,7 @@ async def handle_normal_mode(update: Update, user_id: int, user_message: str, me
             ai_response = final_response
         else:
             # Ошибка при вызове инструмента
-            ai_response = "Извините, не удалось получить данные о погоде."
+            ai_response = "Извините, не удалось получить данные."
             messages.append({
                 "role": "assistant",
                 "content": json.dumps({
@@ -1321,7 +1619,7 @@ async def handle_normal_mode(update: Update, user_id: int, user_message: str, me
 
 def main():
     """Запуск бота"""
-    global mcp_weather_client, mcp_news_client, scheduler, bot_instance
+    global mcp_weather_client, mcp_news_client, mcp_mobile_client, scheduler, bot_instance
     
     # Создаём директорию для историй
     ensure_conversations_dir()
@@ -1338,6 +1636,8 @@ def main():
     application.add_handler(CommandHandler("weather_unsubscribe", weather_unsubscribe))
     application.add_handler(CommandHandler("weather_list", weather_list))
     application.add_handler(CommandHandler("morning_digest", morning_digest))
+    application.add_handler(CommandHandler("mobile_devices", mobile_devices))
+    application.add_handler(CommandHandler("start_emulator", start_emulator))
 
     # Временная команда для теста утренней рассылки
     async def test_morning_weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1353,7 +1653,7 @@ def main():
     
     # Инициализация MCP и планировщика при старте приложения
     async def post_init(app):
-        global mcp_weather_client, mcp_news_client, scheduler, bot_instance
+        global mcp_weather_client, mcp_news_client, mcp_mobile_client, scheduler, bot_instance
         
         # Сохраняем экземпляр бота для использования в scheduled задачах
         bot_instance = app.bot
@@ -1373,6 +1673,20 @@ def main():
             logger.info("✓ MCP News Client initialized")
         else:
             logger.error("✗ Failed to start MCP News Client")
+        
+        # Запускаем MCP Mobile Client
+        logger.info("Starting MCP Mobile Client...")
+        mcp_mobile_client = MCPMobileClient(
+            ssh_host=MCP_MOBILE_SSH_HOST,
+            ssh_port=MCP_MOBILE_SSH_PORT,
+            ssh_user=MCP_MOBILE_SSH_USER,
+            ssh_key=MCP_MOBILE_SSH_KEY,
+            server_path=MCP_MOBILE_SERVER_PATH
+        )
+        if await mcp_mobile_client.start():
+            logger.info("✓ MCP Mobile Client initialized")
+        else:
+            logger.error("✗ Failed to start MCP Mobile Client")
         
         # Инициализация планировщика
         scheduler = AsyncIOScheduler()
@@ -1395,6 +1709,8 @@ def main():
             await mcp_weather_client.stop()
         if mcp_news_client:
             await mcp_news_client.stop()
+        if mcp_mobile_client:
+            await mcp_mobile_client.stop()
         if scheduler:
             scheduler.shutdown()
     
