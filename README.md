@@ -1,12 +1,13 @@
-# 🤖 Telegram бот с Claude AI + Weather + News + Mobile Emulator
+# 🤖 Telegram бот с Claude AI + Weather + News + Mobile + RAG
 
-Умный Telegram бот с интеграцией Claude AI, погодой, новостями и **управлением Android эмулятором** через MCP серверы.
+Telegram бот с Claude AI, погодой, новостями, управлением Android эмулятором и RAG поиском через MCP серверы.
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
 [![Telegram Bot API](https://img.shields.io/badge/Telegram%20Bot%20API-21.0-blue.svg)](https://python-telegram-bot.org/)
 [![Claude AI](https://img.shields.io/badge/Claude-Sonnet%204-purple.svg)](https://www.anthropic.com/)
 [![Node.js](https://img.shields.io/badge/Node.js-20.x-green.svg)](https://nodejs.org/)
 [![Android](https://img.shields.io/badge/Android-API%2034-green.svg)](https://developer.android.com/)
+[![Ollama](https://img.shields.io/badge/Ollama-nomic--embed--text-orange.svg)](https://ollama.ai/)
 
 ---
 
@@ -30,18 +31,25 @@
 - **Топ новости** в утренней рассылке
 - **Команда /morning_digest** - погода + новости
 
-### 📱 Android Эмулятор (через MCP Mobile Server) ⭐ **НОВОЕ!**
+### 📱 Android Эмулятор (через MCP Mobile Server)
 - **Список устройств** - просмотр доступных эмуляторов
 - **Запуск эмулятора** - автоматический старт если выключен
 - **Статус проверка** - готов ли эмулятор к работе
 - **Удалённое управление** - через SSH tunnel с Mac на сервер
 - **Поддержка Appium** - готовность для UI автоматизации
 
+### 🔍 RAG База знаний (через MCP Ollama Server)
+- **Векторный поиск** по документации бота
+- **768-мерные эмбеддинги** через nomic-embed-text
+- **Автоматический выбор** Claude использует при вопросах о боте
+- **Косинусное сходство** для ранжирования результатов
+
 ### 🔧 Инструменты Claude
 - `get_weather(city)` - получить погоду
 - `get_news(category, limit)` - получить новости
 - `mobile_list_available_devices()` - список Android устройств
 - `mobile_start_emulator()` - запустить эмулятор
+- `search_knowledge(query, top_k)` - поиск в базе знаний
 
 ---
 
@@ -52,42 +60,32 @@
 │                  Telegram Bot (Python) - Сервер                 │
 │                                                                  │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │   Commands   │  │ APScheduler  │  │   3x MCP Clients     │  │
+│  │   Commands   │  │ APScheduler  │  │   4x MCP Clients     │  │
 │  │              │  │              │  │                      │  │
-│  │ /morning_    │  │  08:00 daily │  │ Weather+News+Mobile  │  │
-│  │  digest      │  │  broadcast   │  │                      │  │
+│  │ /morning_    │  │  08:00 daily │  │ Weather+News+       │  │
+│  │  digest      │  │  broadcast   │  │ Mobile+Ollama        │  │
 │  │ /start_      │  │              │  │                      │  │
 │  │  emulator    │  │              │  │                      │  │
 │  └──────────────┘  └──────────────┘  └──────────────────────┘  │
 │                                              │                  │
 └──────────────────────────────────────────────┼──────────────────┘
         │                   │                  │
-        ↓                   ↓                  ↓ SSH Tunnel
+        ↓                   ↓                  ↓ SSH Tunnel (localhost:2222)
 ┌───────────────┐  ┌───────────────┐  ┌──────────────────────────┐
 │ MCP Weather   │  │  MCP News     │  │                          │
-│  Server       │  │   Server      │  │  Mac (локальный)         │
-│  (Node.js)    │  │  (Node.js)    │  │                          │
-│               │  │               │  │  ┌───────────────────┐   │
-│  Open-Meteo   │  │  RSS Feeds    │  │  │ MCP Mobile Server │   │
-│      API      │  │               │  │  │    (Node.js)      │   │
-└───────────────┘  └───────────────┘  │  └────────┬──────────┘   │
-                                      │           │              │
-                                      │  ┌────────▼──────────┐   │
-                                      │  │ Appium Server     │   │
-                                      │  └────────┬──────────┘   │
-                                      │           │              │
-                                      │  ┌────────▼──────────┐   │
-                                      │  │ Android Emulator  │   │
-                                      │  │  Pixel 8 API 34   │   │
+│  (Node.js)    │  │  (Node.js)    │  │  Mac (локальный)         │
+│  Open-Meteo   │  │  RSS Feeds    │  │                          │
+└───────────────┘  └───────────────┘  │  ┌───────────────────┐   │
+                                      │  │ MCP Mobile        │   │
+                                      │  │ Appium+Emulator   │   │
+                                      │  └───────────────────┘   │
+                                      │  ┌───────────────────┐   │
+                                      │  │ MCP Ollama        │   │
+                                      │  │ RAG+Embeddings    │   │
+                                      │  │ (768D vectors)    │   │
                                       │  └───────────────────┘   │
                                       └──────────────────────────┘
 ```
-
-### Reverse SSH Tunnel
-- Mac автоматически создаёт туннель при загрузке (LaunchAgent)
-- Сервер подключается к Mac через `localhost:2222`
-- mobile-mcp запускается через SSH с установкой переменных окружения
-- ANDROID_HOME и PATH передаются в SSH сессию
 
 ---
 
@@ -107,7 +105,7 @@
 ### Новости:
 - `/morning_digest` - Получить дайджест (погода + новости) прямо сейчас
 
-### Мобильные устройства: ⭐ **НОВОЕ!**
+### Мобильные устройства:
 - `/mobile_devices` - Показать доступные Android устройства
 - `/start_emulator` - Запустить Android эмулятор
 
@@ -555,22 +553,25 @@ ssh -i ~/.ssh/server_to_mac -p 2222 YOUR_MAC_USER@localhost "/Users/YOUR_MAC_USE
 
 ## 📈 Статус проекта
 
-**Текущая версия:** 6.0.0 (Mobile Emulator Integration)
+**Текущая версия:** 7.0.0 (Ollama RAG Integration)
 
-**Последние изменения (21.12.2024):**
-- ✅ Добавлен MCP Mobile Server с интеграцией Appium
-- ✅ Реализован Reverse SSH tunnel Mac ↔ Сервер
-- ✅ Добавлены команды `/mobile_devices` и `/start_emulator`
-- ✅ Claude может управлять эмулятором через инструменты
-- ✅ Автоматический запуск эмулятора при запросе
-- ✅ Проверка статуса эмулятора
+**Последние изменения (23.12.2024):**
+- ✅ Интеграция Ollama MCP с векторным поиском
+- ✅ 768-мерные эмбеддинги через nomic-embed-text
+- ✅ Claude автоматически использует базу знаний
+- ✅ 4 MCP сервера работают параллельно
+- ✅ Косинусное сходство для ранжирования
+
+**Предыдущие версии:**
+- 6.0.0 (21.12.2024) - MCP Mobile + Appium + Android эмулятор
+- 5.0.0 (19.12.2024) - MCP News + утренние дайджесты
+- 4.0.0 (17.12.2024) - Погодные подписки + сравнение с вчера
 
 **В разработке:**
-- [ ] Снятие скриншотов с эмулятора
-- [ ] Запуск приложений на эмуляторе
-- [ ] UI автоматизация (клики, свайпы)
-- [ ] Поддержка нескольких эмуляторов
-- [ ] iOS симуляторы (требует физический Mac)
+- [ ] Расширение базы знаний
+- [ ] Поддержка PDF/DOCX документов  
+- [ ] Мультиязычные эмбеддинги
+- [ ] PostgreSQL с pgvector
 
 ---
 
@@ -642,23 +643,24 @@ MIT License
 
 ## 🙏 Благодарности
 
-- [Anthropic](https://www.anthropic.com/) - за Claude AI
-- [python-telegram-bot](https://python-telegram-bot.org/) - за библиотеку Telegram Bot
-- [Open-Meteo](https://open-meteo.com/) - за бесплатный Weather API
-- [MCP](https://modelcontextprotocol.io/) - за Model Context Protocol
-- [mobile-mcp](https://github.com/mobile-next/mobile-mcp) - за MCP Mobile Server
-- [Appium](https://appium.io/) - за мобильную автоматизацию
+- [Anthropic](https://www.anthropic.com/) - Claude AI
+- [python-telegram-bot](https://python-telegram-bot.org/) - Telegram Bot библиотека
+- [Open-Meteo](https://open-meteo.com/) - Weather API
+- [MCP](https://modelcontextprotocol.io/) - Model Context Protocol
+- [mobile-mcp](https://github.com/mobile-next/mobile-mcp) - MCP Mobile Server
+- [Appium](https://appium.io/) - мобильная автоматизация
+- [Ollama](https://ollama.ai/) - локальная LLM платформа
 
 ---
 
 ## 📚 Документация
 
-Подробная документация проекта:
-- [NEWS_MCP_INTEGRATION_SUMMARY.md](./NEWS_MCP_INTEGRATION_SUMMARY.md) - Саммари интеграции новостей
+- [OLLAMA_RAG_INTEGRATION_SUMMARY.md](./OLLAMA_RAG_INTEGRATION_SUMMARY.md) - Интеграция RAG поиска
+- [MOBILE_INTEGRATION_SUMMARY.md](./MOBILE_INTEGRATION_SUMMARY.md) - Интеграция Android эмулятора
+- [NEWS_MCP_INTEGRATION_SUMMARY.md](./NEWS_MCP_INTEGRATION_SUMMARY.md) - Интеграция новостей
 - [PROJECT_CONTEXT_UPDATED.md](./PROJECT_CONTEXT_UPDATED.md) - Полный контекст проекта
-- [MCP_Setup_Summary.md](./MCP_Setup_Summary.md) - Настройка MCP серверов
 
 ---
 
-**Последнее обновление:** 21 декабря 2024  
-**Версия README:** 6.0.0
+**Последнее обновление:** 23 декабря 2024  
+**Версия README:** 7.0.0
