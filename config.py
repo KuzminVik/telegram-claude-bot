@@ -73,6 +73,9 @@ MCP_OLLAMA_SSH_USER = "vkuzmin"
 MCP_OLLAMA_SSH_KEY = "/root/.ssh/server_to_mac"
 MCP_OLLAMA_NODE_PATH = "/Users/vkuzmin/.nvm/versions/node/v20.19.6/bin/node"
 MCP_OLLAMA_SERVER_PATH = "/Users/vkuzmin/mcp-servers/ollama-mcp/server.js"
+MCP_OLLAMA_ENV = {
+    "VECTOR_STORE_DIR": "/Users/vkuzmin/vector_stores"
+}
 
 # =============================================================================
 # Системный промпт для сжатия истории
@@ -102,5 +105,9 @@ CLAUDE_MAX_TOKENS = 4096
 # =============================================================================
 
 RAG_VECTOR_STORE_NAME = "bot_knowledge"
-RAG_TOP_K = 3  # Количество чанков для поиска
+RAG_TOP_K_INITIAL = 10  # Количество чанков для первичного поиска (до reranking)
 RAG_LLM_MODEL = "llama3.2:3b"  # Модель для генерации ответов
+
+# Режимы reranking:
+# 'light' - топ-5 документов после reranking
+# 'strict' - топ-2 документа после reranking

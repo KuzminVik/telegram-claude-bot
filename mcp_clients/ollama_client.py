@@ -28,6 +28,7 @@ class MCPOllamaClient:
     async def start(self):
         """Запустить MCP сервер через SSH"""
         try:
+            # ВАЖНО: Устанавливаем VECTOR_STORE_DIR перед запуском node
             ssh_command = [
                 'ssh',
                 '-i', self.ssh_key,
@@ -35,7 +36,7 @@ class MCPOllamaClient:
                 '-o', 'StrictHostKeyChecking=no',
                 '-o', 'UserKnownHostsFile=/dev/null',
                 f'{self.ssh_user}@{self.ssh_host}',
-                f'{self.node_path} {self.server_path}'
+                f'VECTOR_STORE_DIR=/Users/{self.ssh_user}/vector_stores {self.node_path} {self.server_path}'
             ]
             
             self.process = await asyncio.create_subprocess_exec(

@@ -1,26 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-RAG функции - работа с Retrieval-Augmented Generation
+RAG функции - работа с Retrieval-Augmented Generation с Reranker
 """
 
 import time
 import logging
 from datetime import datetime
-from anthropic import Anthropic
 
 from config import (
-    ANTHROPIC_API_KEY,
     RAG_COMPARISON_FILE,
     RAG_VECTOR_STORE_NAME,
-    RAG_TOP_K,
-    CLAUDE_MODEL
+    RAG_TOP_K_INITIAL,
+    RAG_LLM_MODEL
 )
 
 logger = logging.getLogger(__name__)
-
-# Глобальный клиент Anthropic
-anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 # Глобальная ссылка на MCP Ollama client (устанавливается в bot.py)
 _ollama_client = None
@@ -32,8 +27,18 @@ def set_ollama_client(client):
     _ollama_client = client
 
 
-async def get_rag_answer(query: str, store_name: str = None) -> dict:
-    """Получить ответ через RAG"""
+async def get_rag_answer(query: str, rerank_mode: str, store_name: str = None) -> dict:
+    """
+    Получить ответ через RAG с reranking
+    
+    Args:
+        query: Вопрос пользователя
+        rerank_mode: 'light' (top-5) или 'strict' (top-2)
+        store_name: Имя векторного хранилища
+    
+    Returns:
+        dict с ответом, источниками и метриками
+    """
     if store_name is None:
         store_name = RAG_VECTOR_STORE_NAME
     
@@ -44,7 +49,8 @@ async def get_rag_answer(query: str, store_name: str = None) -> dict:
             "answer": "RAG недоступен",
             "error": "MCP Ollama client not initialized",
             "time": 0,
-            "sources": []
+            "sources": [],
+            "rerank_mode": rerank_mode
         }
     
     try:
@@ -53,7 +59,9 @@ async def get_rag_answer(query: str, store_name: str = None) -> dict:
             {
                 "store_name": store_name,
                 "query": query,
-                "top_k": RAG_TOP_K
+                "top_k": RAG_TOP_K_INITIAL,  # Берем больше для reranking
+                "model": RAG_LLM_MODEL,
+                "rerank_mode": rerank_mode  # 'light' или 'strict'
             }
         )
         
@@ -63,17 +71,20 @@ async def get_rag_answer(query: str, store_name: str = None) -> dict:
             return {
                 "answer": result.get("answer", ""),
                 "sources": result.get("sources", []),
-                "model": result.get("model", "llama3.2:3b"),
+                "model": result.get("model", RAG_LLM_MODEL),
                 "chunks_used": result.get("chunks_used", 0),
                 "time": round(elapsed, 2),
-                "context_length": result.get("context_length", 0)
+                "context_length": result.get("context_length", 0),
+                "rerank_mode": rerank_mode,
+                "reranked": result.get("reranked", False)
             }
         else:
             return {
                 "answer": "Ошибка получения ответа через RAG",
                 "error": "No result from MCP",
                 "time": round(elapsed, 2),
-                "sources": []
+                "sources": [],
+                "rerank_mode": rerank_mode
             }
     except Exception as e:
         elapsed = time.time() - start_time
@@ -82,41 +93,8 @@ async def get_rag_answer(query: str, store_name: str = None) -> dict:
             "answer": f"Ошибка: {str(e)}",
             "error": str(e),
             "time": round(elapsed, 2),
-            "sources": []
-        }
-
-
-async def get_no_rag_answer(query: str) -> dict:
-    """Получить ответ без RAG (прямо от Claude)"""
-    start_time = time.time()
-    
-    try:
-        response = anthropic_client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=1000,
-            messages=[
-                {"role": "user", "content": query}
-            ]
-        )
-        
-        elapsed = time.time() - start_time
-        
-        answer = response.content[0].text if response.content else ""
-        
-        return {
-            "answer": answer,
-            "model": "claude-sonnet-4",
-            "time": round(elapsed, 2),
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens
-        }
-    except Exception as e:
-        elapsed = time.time() - start_time
-        logger.error(f"Error in get_no_rag_answer: {e}")
-        return {
-            "answer": f"Ошибка: {str(e)}",
-            "error": str(e),
-            "time": round(elapsed, 2)
+            "sources": [],
+            "rerank_mode": rerank_mode
         }
 
 
