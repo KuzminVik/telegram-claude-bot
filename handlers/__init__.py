@@ -1,8 +1,22 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Обработчики команд бота
+Handlers - обработчики команд
 """
 
-from .rag_compare import compare_rag
-from .basic import start, clear_history, show_stats, debug_history
+# Импортируем только то что точно есть
+from . import basic
 
-__all__ = ['compare_rag', 'start', 'clear_history', 'show_stats', 'debug_history']
+# Импортируем новый RAG handler
+from .with_rag import (
+    with_rag_command,
+    clear_rag_history_command,
+    rag_history_command
+)
+
+__all__ = [
+    'basic',
+    'with_rag_command',
+    'clear_rag_history_command',
+    'rag_history_command',
+]

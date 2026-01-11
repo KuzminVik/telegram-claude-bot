@@ -1,46 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Telegram бот с интеграцией Claude AI, погодой, новостями и RAG
-Модульная архитектура
+Telegram бот с Claude AI + MCP серверы - точка входа
+Версия 9.1 - добавлена команда /with_rag
 """
 
 import logging
-from telegram import Update
-from telegram.ext import Application, CommandHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-# Импорты конфигурации
-from config import (
-    TELEGRAM_TOKEN,
-    MCP_WEATHER_SERVER_PATH,
-    MCP_NEWS_SERVER_PATH,
-    MCP_MOBILE_SSH_HOST,
-    MCP_MOBILE_SSH_PORT,
-    MCP_MOBILE_SSH_USER,
-    MCP_MOBILE_SSH_KEY,
-    MCP_MOBILE_SERVER_PATH,
-    MCP_OLLAMA_SSH_HOST,
-    MCP_OLLAMA_SSH_PORT,
-    MCP_OLLAMA_SSH_USER,
-    MCP_OLLAMA_SSH_KEY,
-    MCP_OLLAMA_NODE_PATH,
-    MCP_OLLAMA_SERVER_PATH
-)
-
-# Импорты MCP клиентов
-from mcp_clients import (
-    MCPWeatherClient,
-    MCPNewsClient,
-    MCPMobileClient,
-    MCPOllamaClient
-)
-
-# Импорты handlers
-from handlers.rag_compare import compare_rag
-from handlers.basic import start, clear_history, show_stats, debug_history
-
-# Импорты utils
-from utils.rag_functions import set_ollama_client
+from config import *
+from mcp_clients import init_mcp_clients, shutdown_mcp_clients
+from handlers.with_rag import with_rag_command, clear_rag_history_command, rag_history_command
 
 # Настройка логирования
 logging.basicConfig(
@@ -49,106 +19,53 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Глобальные переменные для MCP клиентов
-mcp_weather_client = None
-mcp_news_client = None
-mcp_mobile_client = None
-mcp_ollama_client = None
-
-
-async def post_init(app):
-    """Инициализация после запуска приложения"""
-    global mcp_weather_client, mcp_news_client, mcp_mobile_client, mcp_ollama_client
-    
-    logger.info("Initializing MCP clients...")
-    
-    # Weather Client
-    logger.info("Starting MCP Weather Client...")
-    mcp_weather_client = MCPWeatherClient(MCP_WEATHER_SERVER_PATH)
-    if await mcp_weather_client.start():
-        logger.info("✓ MCP Weather Client initialized")
-    else:
-        logger.error("✗ Failed to start MCP Weather Client")
-    
-    # News Client
-    logger.info("Starting MCP News Client...")
-    mcp_news_client = MCPNewsClient(MCP_NEWS_SERVER_PATH)
-    if await mcp_news_client.start():
-        logger.info("✓ MCP News Client initialized")
-    else:
-        logger.error("✗ Failed to start MCP News Client")
-    
-    # Mobile Client
-    logger.info("Starting MCP Mobile Client...")
-    mcp_mobile_client = MCPMobileClient(
-        ssh_host=MCP_MOBILE_SSH_HOST,
-        ssh_port=MCP_MOBILE_SSH_PORT,
-        ssh_user=MCP_MOBILE_SSH_USER,
-        ssh_key=MCP_MOBILE_SSH_KEY,
-        server_path=MCP_MOBILE_SERVER_PATH
-    )
-    if await mcp_mobile_client.start():
-        logger.info("✓ MCP Mobile Client initialized")
-    else:
-        logger.error("✗ Failed to start MCP Mobile Client")
-    
-    # Ollama Client (для RAG)
-    logger.info("Starting MCP Ollama Client...")
-    mcp_ollama_client = MCPOllamaClient(
-        ssh_host=MCP_OLLAMA_SSH_HOST,
-        ssh_port=MCP_OLLAMA_SSH_PORT,
-        ssh_user=MCP_OLLAMA_SSH_USER,
-        ssh_key=MCP_OLLAMA_SSH_KEY,
-        node_path=MCP_OLLAMA_NODE_PATH,
-        server_path=MCP_OLLAMA_SERVER_PATH
-    )
-    if await mcp_ollama_client.start():
-        logger.info("✓ MCP Ollama Client initialized")
-        # Устанавливаем глобальный клиент для RAG функций
-        set_ollama_client(mcp_ollama_client)
-    else:
-        logger.error("✗ Failed to start MCP Ollama Client")
-    
-    logger.info("All MCP clients initialized")
-
-
-async def post_shutdown(app):
-    """Остановка при завершении приложения"""
-    logger.info("Shutting down MCP clients...")
-    
-    if mcp_weather_client:
-        await mcp_weather_client.stop()
-    if mcp_news_client:
-        await mcp_news_client.stop()
-    if mcp_mobile_client:
-        await mcp_mobile_client.stop()
-    if mcp_ollama_client:
-        await mcp_ollama_client.stop()
-    
-    logger.info("All MCP clients stopped")
-
 
 def main():
-    """Главная функция"""
-    logger.info("Bot is starting...")
+    """Запуск бота"""
     
-    # Создаём приложение
+    # Импортируем handlers.basic чтобы получить все обработчики
+    from handlers import basic
+    
+    # Создание приложения
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Регистрируем handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("compare", compare_rag))
-    application.add_handler(CommandHandler("clear", clear_history))
-    application.add_handler(CommandHandler("stats", show_stats))
-    application.add_handler(CommandHandler("debug", debug_history))
+    # Регистрация обработчиков команд из basic
+    application.add_handler(CommandHandler("start", basic.start))
+    application.add_handler(CommandHandler("clear", basic.clear_history))
+    application.add_handler(CommandHandler("stats", basic.show_stats))
+    application.add_handler(CommandHandler("debug", basic.debug_history))
     
-    # Устанавливаем callbacks
-    application.post_init = post_init
-    application.post_shutdown = post_shutdown
+    # Регистрация дополнительных команд если они есть
+    if hasattr(basic, 'weather_subscribe'):
+        application.add_handler(CommandHandler("weather_subscribe", basic.weather_subscribe))
+    if hasattr(basic, 'weather_unsubscribe'):
+        application.add_handler(CommandHandler("weather_unsubscribe", basic.weather_unsubscribe))
+    if hasattr(basic, 'weather_list'):
+        application.add_handler(CommandHandler("weather_list", basic.weather_list))
+    if hasattr(basic, 'morning_digest'):
+        application.add_handler(CommandHandler("morning_digest", basic.morning_digest))
+    if hasattr(basic, 'mobile_devices'):
+        application.add_handler(CommandHandler("mobile_devices", basic.mobile_devices))
+    if hasattr(basic, 'start_emulator'):
+        application.add_handler(CommandHandler("start_emulator", basic.start_emulator))
     
-    # Запускаем бота
-    logger.info("Bot is running...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Регистрация обработчиков команд - RAG РЕЖИМ ⭐ НОВОЕ!
+    application.add_handler(CommandHandler("with_rag", with_rag_command))
+    application.add_handler(CommandHandler("clear_rag", clear_rag_history_command))
+    application.add_handler(CommandHandler("rag_history", rag_history_command))
+    
+    # Регистрация обработчика текстовых сообщений
+    if hasattr(basic, 'handle_message'):
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, basic.handle_message))
+    
+    # Инициализация MCP и планировщика при старте приложения
+    application.post_init = init_mcp_clients
+    application.post_shutdown = shutdown_mcp_clients
+    
+    logger.info("🤖 Bot is running (v9.1 - RAG Mode)...")
+    
+    # Запуск бота
+    application.run_polling()
 
 
 if __name__ == '__main__':
