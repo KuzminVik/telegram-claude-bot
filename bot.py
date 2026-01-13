@@ -11,6 +11,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from config import *
 from mcp_clients import init_mcp_clients, shutdown_mcp_clients
 from handlers.with_rag import with_rag_command, clear_rag_history_command, rag_history_command
+from handlers.github_search import search_repo_command, get_file_command
 
 # Настройка логирования
 logging.basicConfig(
@@ -53,6 +54,8 @@ def main():
     application.add_handler(CommandHandler("with_rag", with_rag_command))
     application.add_handler(CommandHandler("clear_rag", clear_rag_history_command))
     application.add_handler(CommandHandler("rag_history", rag_history_command))
+    application.add_handler(CommandHandler("search_repo", search_repo_command))
+    application.add_handler(CommandHandler("get_file", get_file_command))
     
     # Регистрация обработчика текстовых сообщений
     if hasattr(basic, 'handle_message'):

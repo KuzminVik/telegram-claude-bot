@@ -1,24 +1,32 @@
-# Виртуальное окружение
-venv/
-env/
-.venv/
-
-# Секретные данные
-.env
-*.env
-config.ini
-
-# Логи
-*.log
-bot.log
-
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
+*.py[cod]
+*$py.class
 *.so
+.Python
+venv/
+env/
+
+# Backups
+*.backup
+*.backup.*
+*.old
+*_temp.py
+*.tar.gz
+
+# Data files
+conversations/
+*.json
+weather_*.json
+rag_comparisons.json
+temperature_*.json
+temperature_*.md
+
+# Temporary files
+temp/
+*.txt
+!requirements.txt
+!README.txt
 
 # IDE
 .vscode/
@@ -29,3 +37,11 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Archives
+*.tar.gz
+*.zip
+
+# Modular bot (если не нужен)
+modular_bot/
+modular_bot_*.tar.gz

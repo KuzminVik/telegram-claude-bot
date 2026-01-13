@@ -111,3 +111,12 @@ RAG_LLM_MODEL = "llama3.2:3b"  # Модель для генерации отве
 # Режимы reranking:
 # 'light' - топ-5 документов после reranking
 # 'strict' - топ-2 документа после reranking
+
+# =============================================================================
+# MCP GitHub Server - для поиска по репозиториям
+# =============================================================================
+
+MCP_GITHUB_SERVER_PATH = "/home/claude/mcp-github-server/server.js"
+GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
+GITHUB_REPO_OWNER = "KuzminVik"
+GITHUB_REPO_NAME = "telegram-claude-bot"

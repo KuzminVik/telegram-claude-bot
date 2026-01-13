@@ -10,6 +10,7 @@ from .weather_client import MCPWeatherClient
 from .news_client import MCPNewsClient
 from .mobile_client import MCPMobileClient
 from .ollama_client import MCPOllamaClient
+from .github_client import MCPGitHubClient
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ mcp_weather_client = None
 mcp_news_client = None
 mcp_mobile_client = None
 mcp_ollama_client = None
+mcp_github_client = None
 scheduler = None
 bot_instance = None
 
@@ -26,7 +28,7 @@ async def init_mcp_clients(app):
     """
     Инициализация всех MCP клиентов при старте бота
     """
-    global mcp_weather_client, mcp_news_client, mcp_mobile_client, mcp_ollama_client
+    global mcp_weather_client, mcp_news_client, mcp_mobile_client, mcp_ollama_client, mcp_github_client
     global scheduler, bot_instance
     
     from config import (
@@ -43,7 +45,11 @@ async def init_mcp_clients(app):
         MCP_OLLAMA_SSH_USER,
         MCP_OLLAMA_SSH_KEY,
         MCP_OLLAMA_NODE_PATH,
-        MCP_OLLAMA_SERVER_PATH
+        MCP_OLLAMA_SERVER_PATH,
+        MCP_GITHUB_SERVER_PATH,
+        GITHUB_TOKEN,
+        GITHUB_REPO_OWNER,
+        GITHUB_REPO_NAME
     )
     
     # Сохраняем экземпляр бота для использования в scheduled задачах
@@ -94,9 +100,30 @@ async def init_mcp_clients(app):
 
         from utils.rag_functions import set_ollama_client
         set_ollama_client(mcp_ollama_client)
+        from utils.github_rag_functions import set_github_client
+        if mcp_github_client:
+            set_github_client(mcp_github_client)
+            logger.info("✓ GitHub RAG functions configured")
         logger.info("✓ RAG functions configured with Ollama client")
     else:
         logger.error("✗ Failed to start MCP Ollama Client")
+    
+    # Запускаем MCP GitHub Client
+    logger.info("Starting MCP GitHub Client...")
+    if GITHUB_TOKEN:
+        mcp_github_client = MCPGitHubClient(
+            server_path=MCP_GITHUB_SERVER_PATH,
+            github_token=GITHUB_TOKEN
+        )
+        if await mcp_github_client.start():
+            logger.info("✓ MCP GitHub Client initialized")
+            from utils.github_rag_functions import set_github_client
+            set_github_client(mcp_github_client)
+            logger.info("✓ GitHub RAG functions configured")
+        else:
+            logger.error("✗ Failed to start MCP GitHub Client")
+    else:
+        logger.warning("⚠ GITHUB_TOKEN not set, GitHub MCP disabled")
     
     # Инициализация планировщика
     scheduler = AsyncIOScheduler()
@@ -121,7 +148,7 @@ async def shutdown_mcp_clients(app):
     """
     Остановка всех MCP клиентов при завершении работы бота
     """
-    global mcp_weather_client, mcp_news_client, mcp_mobile_client, mcp_ollama_client, scheduler
+    global mcp_weather_client, mcp_news_client, mcp_mobile_client, mcp_ollama_client, mcp_github_client, scheduler
     
     if mcp_weather_client:
         await mcp_weather_client.stop()
@@ -138,6 +165,10 @@ async def shutdown_mcp_clients(app):
     if mcp_ollama_client:
         await mcp_ollama_client.stop()
         logger.info("✓ MCP Ollama Client stopped")
+    
+    if mcp_github_client:
+        await mcp_github_client.stop()
+        logger.info("✓ MCP GitHub Client stopped")
     
 #    if scheduler:
 #        scheduler.shutdown()
@@ -164,6 +195,11 @@ def get_ollama_client():
     return mcp_ollama_client
 
 
+def get_github_client():
+    """Получить экземпляр GitHub клиента"""
+    return mcp_github_client
+
+
 def get_bot_instance():
     """Получить экземпляр бота для scheduled задач"""
     return bot_instance
@@ -174,11 +210,13 @@ __all__ = [
     'MCPNewsClient',
     'MCPMobileClient',
     'MCPOllamaClient',
+    'MCPGitHubClient',
     'init_mcp_clients',
     'shutdown_mcp_clients',
     'get_weather_client',
     'get_news_client',
     'get_mobile_client',
     'get_ollama_client',
+    'get_github_client',
     'get_bot_instance'
 ]
