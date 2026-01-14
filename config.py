@@ -130,3 +130,8 @@ MAX_DIFF_SIZE = 5000
 MAX_FILES_FOR_REVIEW = 10
 REVIEW_TEMPERATURE = 0.3
 REVIEW_MODEL = "claude-sonnet-4-20250514"
+# Добавить в конец /root/telegram-bot/config.py:
+
+# ===== NOTIFICATIONS CONFIGURATION =====
+# Chat ID администратора для уведомлений о PR
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "1081034562"))
