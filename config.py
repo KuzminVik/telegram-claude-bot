@@ -120,3 +120,13 @@ MCP_GITHUB_SERVER_PATH = "/home/claude/mcp-github-server/server.js"
 GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
 GITHUB_REPO_OWNER = "KuzminVik"
 GITHUB_REPO_NAME = "telegram-claude-bot"
+
+# ===== WEBHOOK CONFIGURATION =====
+WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", 8080))
+GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+
+# ===== CODE REVIEW CONFIGURATION =====
+MAX_DIFF_SIZE = 5000
+MAX_FILES_FOR_REVIEW = 10
+REVIEW_TEMPERATURE = 0.3
+REVIEW_MODEL = "claude-sonnet-4-20250514"
