@@ -12,6 +12,7 @@ from config import *
 from mcp_clients import init_mcp_clients, shutdown_mcp_clients
 from handlers.with_rag import with_rag_command, clear_rag_history_command, rag_history_command
 from handlers.github_search import search_repo_command, get_file_command
+from handlers.support import support_command, my_tickets_command
 
 # Настройка логирования
 logging.basicConfig(
@@ -35,6 +36,8 @@ def main():
     application.add_handler(CommandHandler("clear", basic.clear_history))
     application.add_handler(CommandHandler("stats", basic.show_stats))
     application.add_handler(CommandHandler("debug", basic.debug_history))
+    application.add_handler(CommandHandler("support", support_command))
+    application.add_handler(CommandHandler("my_tickets", my_tickets_command))
     
     # Регистрация дополнительных команд если они есть
     if hasattr(basic, 'weather_subscribe'):
