@@ -1,0 +1,27 @@
+[Unit]
+Description=GitHub Webhook Server for Code Review
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/telegram-bot
+Environment="GITHUB_TOKEN=YOUR_GITHUB_TOKEN"
+Environment="GITHUB_WEBHOOK_SECRET=YOUR_WEBHOOK_SECRET"
+Environment="ANTHROPIC_API_KEY=YOUR_ANTHROPIC_KEY"
+Environment="WEBHOOK_PORT=8080"
+
+# Используем gunicorn для production
+ExecStart=/root/telegram-bot/venv/bin/gunicorn \
+    --bind 0.0.0.0:8080 \
+    --workers 2 \
+    --timeout 120 \
+    --access-logfile /var/log/webhook-server-access.log \
+    --error-logfile /var/log/webhook-server-error.log \
+    webhook_server:app
+
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

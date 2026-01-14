@@ -1,10 +1,11 @@
 # 🤖 Telegram Claude Bot
 
-Telegram бот с Claude AI и множественными MCP интеграциями для погоды, новостей, управления Android, RAG поиска и работы с GitHub репозиториями.
+Telegram бот с Claude AI и автоматическим code review для Pull Request через GitHub Webhooks.
 
-## Возможности
+## ✨ Возможности
 
-- 💬 Диалоги с Claude AI (Sonnet 4.5)
+### 💬 Диалоги и интеграции
+- Диалоги с Claude AI (Sonnet 4.5)
 - 🌤️ Погода с подписками
 - 📰 Новости из RSS
 - 📱 Управление Android эмулятором
@@ -12,7 +13,14 @@ Telegram бот с Claude AI и множественными MCP интегра�
 - 🔍 Поиск по коду GitHub репозитория
 - 💾 Персистентное хранилище диалогов
 
-## Команды
+### 🤖 Автоматический Code Review (NEW!)
+- ⚡ **Webhook интеграция** - автоматическое ревью при создании/обновлении PR
+- 🧠 **RAG контекст** - использует документацию проекта для ревью
+- 📊 **Детальный анализ** - архитектура, качество кода, безопасность, интеграции
+- 💬 **Telegram уведомления** - мгновенные уведомления о PR и результатах ревью
+- 📝 **Комментарии в GitHub** - полное ревью публикуется в PR
+
+## 📋 Команды
 
 ### Основные
 ```
@@ -46,27 +54,35 @@ Telegram бот с Claude AI и множественными MCP интегра�
 /start_emulator    - Запустить Android эмулятор
 ```
 
-## Архитектура
+## 🏗️ Архитектура
 
 ```
-bot.py                  # Точка входа
-config.py               # Конфигурация
-handlers/               # Обработчики команд
-  ├── basic.py
-  ├── with_rag.py
-  └── github_search.py
-mcp_clients/           # MCP клиенты
-  ├── weather_client.py
-  ├── news_client.py
-  ├── mobile_client.py
-  ├── ollama_client.py
-  └── github_client.py
-utils/                 # Утилиты
-  ├── rag_functions.py
-  └── github_rag_functions.py
+telegram-bot/
+├── bot.py                  # Точка входа Telegram бота
+├── webhook_server.py       # Webhook сервер для GitHub
+├── config.py              # Централизованная конфигурация
+├── requirements.txt
+│
+├── handlers/              # Обработчики команд
+│   ├── basic.py          # Базовые команды
+│   ├── with_rag.py       # RAG команды
+│   ├── github_search.py  # GitHub поиск
+│   └── pr_review.py      # Code review для PR
+│
+├── mcp_clients/          # MCP клиенты
+│   ├── weather_client.py
+│   ├── news_client.py
+│   ├── mobile_client.py
+│   ├── ollama_client.py
+│   └── github_client.py
+│
+└── utils/                # Утилиты
+    ├── rag_functions.py
+    ├── github_rag_functions.py
+    └── github_api.py     # GitHub REST API
 ```
 
-## MCP Серверы
+## 🔌 MCP Серверы
 
 **Локальные (на сервере):**
 - Weather MCP - `/home/claude/mcp-weather-server/`
@@ -77,29 +93,22 @@ utils/                 # Утилиты
 - Mobile MCP - управление Android
 - Ollama RAG MCP - векторный поиск
 
-## Установка
+## 🚀 Быстрый старт
 
 ### Требования
 - Python 3.12+
 - Node.js (для MCP серверов)
 - Ollama (для RAG, опционально)
 
-### Зависимости
-```bash
-python-telegram-bot==21.0
-anthropic==0.75.0
-apscheduler
-```
+### Установка
 
-### Настройка
-
-1. **Клонировать:**
+1. **Клонировать репозиторий:**
 ```bash
 git clone https://github.com/KuzminVik/telegram-claude-bot.git
 cd telegram-claude-bot
 ```
 
-2. **Создать venv:**
+2. **Создать виртуальное окружение:**
 ```bash
 python3 -m venv venv
 source venv/bin/activate
@@ -108,9 +117,10 @@ pip install -r requirements.txt
 
 3. **Настроить переменные окружения:**
 ```bash
-export TELEGRAM_BOT_TOKEN="your_token"
-export ANTHROPIC_API_KEY="your_key"
+export TELEGRAM_TOKEN="your_telegram_token"
+export ANTHROPIC_API_KEY="your_anthropic_key"
 export GITHUB_TOKEN="your_github_token"
+export GITHUB_WEBHOOK_SECRET="your_webhook_secret"
 ```
 
 4. **Установить MCP серверы:**
@@ -131,119 +141,152 @@ cd /home/claude/mcp-github-server
 npm install @modelcontextprotocol/server-github
 ```
 
-5. **Запустить:**
+5. **Запустить бота:**
 ```bash
 python bot.py
 ```
 
-## Systemd сервис
-
-```ini
-[Unit]
-Description=Telegram Claude Bot
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root/telegram-bot
-Environment="TELEGRAM_BOT_TOKEN=..."
-Environment="ANTHROPIC_API_KEY=..."
-Environment="GITHUB_TOKEN=..."
-ExecStart=/root/telegram-bot/venv/bin/python /root/telegram-bot/bot.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Управление:
+6. **Запустить webhook сервер (опционально):**
 ```bash
-sudo systemctl start telegram-bot
-sudo systemctl status telegram-bot
-sudo journalctl -u telegram-bot -f
+gunicorn --bind 0.0.0.0:8080 --workers 2 webhook_server:app
 ```
 
-## Структура данных
+## 🔧 Настройка автоматического Code Review
 
-### История диалогов
-```
-/root/telegram-bot/conversations/user_{user_id}.json
-```
+### 1. Настройка Webhook сервера
 
-Формат:
-```json
-{
-  "user_id": 12345,
-  "last_updated": "2026-01-13T12:00:00",
-  "message_count": 25,
-  "messages": [...]
-}
+См. подробную инструкцию: [WEBHOOK_SETUP.md](WEBHOOK_SETUP.md)
+
+Краткая версия:
+```bash
+# Systemd service для webhook
+sudo cp webhook-server.service /etc/systemd/system/
+sudo systemctl enable webhook-server
+sudo systemctl start webhook-server
 ```
 
-### Векторные хранилища (Ollama)
-```
-/Users/vkuzmin/vector_stores/bot_knowledge.json
-```
+### 2. Настройка GitHub Webhook
 
-## RAG Pipeline
+1. Перейти: `https://github.com/YOUR_USERNAME/YOUR_REPO/settings/hooks`
+2. "Add webhook"
+3. **Payload URL**: `http://YOUR_SERVER_IP:8080/webhook/github`
+4. **Content type**: `application/json`
+5. **Secret**: [ваш webhook secret]
+6. **Events**: Pull requests
+7. "Add webhook"
+
+### 3. Результат
+
+При создании PR:
+1. 🔔 Telegram уведомление о начале ревью
+2. 🧠 RAG поиск по документации проекта
+3. 🤖 Claude анализирует код (~20-30 сек)
+4. 📝 Комментарий с ревью публикуется в PR
+5. ✅ Результат ревью отправляется в Telegram
+
+## 📊 RAG Pipeline
 
 ```
-Запрос → Эмбеддинг → Векторный поиск → Reranking → LLM → Ответ
+Вопрос пользователя
+    ↓
+Создание эмбеддинга (nomic-embed-text)
+    ↓
+Векторный поиск (top_k=10)
+    ↓
+Reranking (light/strict mode)
+    ↓
+Генерация ответа (llama3.2:3b)
+    ↓
+Ответ пользователю
 ```
 
 **Модели:**
 - Эмбеддинги: `nomic-embed-text` (768D)
 - Генерация: `llama3.2:3b`
 
-## Конфигурация
+## 🔐 Переменные окружения
 
-Основные настройки в `config.py`:
+**Обязательные:**
+- `TELEGRAM_TOKEN` - токен Telegram бота
+- `ANTHROPIC_API_KEY` - API ключ Claude
 
-```python
-# MCP серверы
-MCP_WEATHER_SERVER_PATH = "..."
-MCP_NEWS_SERVER_PATH = "..."
-MCP_GITHUB_SERVER_PATH = "..."
+**Опциональные:**
+- `GITHUB_TOKEN` - GitHub Personal Access Token
+- `GITHUB_WEBHOOK_SECRET` - секрет для webhook
+- `ADMIN_CHAT_ID` - Chat ID для уведомлений о PR
+- `WEBHOOK_PORT` - порт webhook сервера (по умолчанию 8080)
 
-# GitHub
-GITHUB_REPO_OWNER = "KuzminVik"
-GITHUB_REPO_NAME = "telegram-claude-bot"
+## 🖥️ Systemd сервисы
 
-# RAG
-RAG_VECTOR_STORE_NAME = "bot_knowledge"
-RAG_TOP_K_INITIAL = 10
-RAG_LLM_MODEL = "llama3.2:3b"
+### Telegram Bot
+```bash
+sudo systemctl start telegram-bot
+sudo systemctl status telegram-bot
+sudo journalctl -u telegram-bot -f
 ```
 
-## Примеры использования
-
-**Поиск по коду:**
-```
-/search_repo async def
-/search_repo MCP client
-/search_repo vector search
+### Webhook Server
+```bash
+sudo systemctl start webhook-server
+sudo systemctl status webhook-server
+sudo journalctl -u webhook-server -f
 ```
 
-**RAG запрос:**
+## 📝 Примеры использования
+
+### Поиск по коду
+```
+/search_repo async def        # найдёт все async функции
+/search_repo MCP             # найдёт упоминания MCP
+/get_file bot.py             # получить содержимое bot.py
+```
+
+### RAG запрос
 ```
 /with_rag Как работает сжатие истории?
 /with_rag Какие команды есть у бота?
 ```
 
-**Погода:**
-```
-/weather_subscribe Moscow
-/morning_digest
-```
+### Code Review
+Создайте PR → автоматически получите детальное ревью через 30 секунд
 
-## Документация
+## 🎯 Что проверяет Code Review
 
-Полная документация: [PROJECT_MASTER_CONTEXT.md](PROJECT_MASTER_CONTEXT.md)
+1. **Архитектура и дизайн**
+   - Модульная структура
+   - Separation of Concerns
+   - Соответствие принципам проекта
 
-## Версии
+2. **Качество кода**
+   - PEP 8
+   - Type hints
+   - Обработка ошибок
+   - Логирование
+   - Документация
 
+3. **Функциональность**
+   - Корректность логики
+   - Edge cases
+   - Async/await паттерны
+
+4. **Безопасность**
+   - Валидация входных данных
+   - Управление секретами
+   - SQL/Command injection
+
+5. **Интеграция**
+   - Работа с MCP
+   - Совместимость с кодом
+
+## 📚 Документация
+
+- [Полный контекст проекта](PROJECT_MASTER_CONTEXT.md)
+- [Настройка webhook](WEBHOOK_SETUP.md)
+- [Быстрый старт webhook](QUICKSTART.md)
+
+## 🔗 Версии
+
+- **v10.0** (14.01.2026) - Автоматический Code Review с Telegram уведомлениями
 - **v9.2** (13.01.2026) - GitHub MCP интеграция
 - **v9.1** (23.12.2024) - RAG команды
 - **v7.0** (24.12.2024) - Модульная архитектура
@@ -254,10 +297,18 @@ RAG_LLM_MODEL = "llama3.2:3b"
 - **v2.0** (14.12.2024) - JSON хранилище
 - **v1.0** (Декабрь 2024) - Базовая версия
 
-## Лицензия
+## 🤝 Контрибьютинг
+
+Создавайте PR - автоматический code review поможет с ревью! 🤖
+
+## 📄 Лицензия
 
 MIT
 
-## Контакты
+## 👤 Автор
 
 Виктор Кузьмин - [@KuzminVik](https://github.com/KuzminVik)
+
+---
+
+**Telegram бот:** @viksimurg_claude_bot
