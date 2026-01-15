@@ -125,6 +125,9 @@ async def init_mcp_clients(app):
     else:
         logger.warning("⚠ GITHUB_TOKEN not set, GitHub MCP disabled")
     
+    # Запускаем Task MCP Client
+    await init_task_client()
+
     # Инициализация планировщика
     scheduler = AsyncIOScheduler()
     
@@ -169,6 +172,10 @@ async def shutdown_mcp_clients(app):
     if mcp_github_client:
         await mcp_github_client.stop()
         logger.info("✓ MCP GitHub Client stopped")
+
+    if mcp_task_client:
+        await mcp_task_client.stop()
+        logger.info("✓ Task MCP Client stopped")
     
 #    if scheduler:
 #        scheduler.shutdown()
@@ -220,3 +227,20 @@ __all__ = [
     'get_github_client',
     'get_bot_instance'
 ]
+
+# Task MCP Client
+from mcp_clients.task_client import TaskMCPClient
+
+mcp_task_client = None
+
+async def init_task_client():
+    global mcp_task_client
+    logger.info("Starting Task MCP Client...")
+    mcp_task_client = TaskMCPClient()
+    success = await mcp_task_client.start()
+    if success:
+        logger.info("✓ Task MCP Client initialized")
+    else:
+        logger.error("✗ Task MCP Client failed to initialize")
+        mcp_task_client = None
+    return success

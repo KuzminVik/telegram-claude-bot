@@ -135,3 +135,7 @@ REVIEW_MODEL = "claude-sonnet-4-20250514"
 # ===== NOTIFICATIONS CONFIGURATION =====
 # Chat ID администратора для уведомлений о PR
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "1081034562"))
+
+# Task MCP Configuration
+MCP_TASK_NODE_PATH = "/usr/bin/node"
+MCP_TASK_SERVER_PATH = "/home/claude/mcp-task-server/server.js"

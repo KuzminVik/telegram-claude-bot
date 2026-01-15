@@ -13,6 +13,7 @@ from mcp_clients import init_mcp_clients, shutdown_mcp_clients
 from handlers.with_rag import with_rag_command, clear_rag_history_command, rag_history_command
 from handlers.github_search import search_repo_command, get_file_command
 from handlers.support import support_command, my_tickets_command
+from handlers.team_assistant import handle_tasks_command, handle_task_create_command, handle_task_update_command, handle_ask_team_command
 
 # Настройка логирования
 logging.basicConfig(
@@ -59,6 +60,12 @@ def main():
     application.add_handler(CommandHandler("rag_history", rag_history_command))
     application.add_handler(CommandHandler("search_repo", search_repo_command))
     application.add_handler(CommandHandler("get_file", get_file_command))
+    
+    # Team Assistant commands
+    application.add_handler(CommandHandler("tasks", handle_tasks_command))
+    application.add_handler(CommandHandler("task_create", handle_task_create_command))
+    application.add_handler(CommandHandler("task_update", handle_task_update_command))
+    application.add_handler(CommandHandler("ask_team", handle_ask_team_command))
     
     # Регистрация обработчика текстовых сообщений
     if hasattr(basic, 'handle_message'):
