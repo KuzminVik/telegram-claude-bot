@@ -1,58 +1,150 @@
-name: Deploy Bot to VPS
+name: Deploy Telegram Bot
 
 on:
+  # Триггер: merge PR в main
   push:
     branches:
       - main
+  
+  # Ручной запуск
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (optional)'
+        required: false
 
 jobs:
-  deploy:
+  # Job 1: Tests
+  test:
+    name: Run Tests
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-    
-    - name: Deploy to VPS
-      uses: appleboy/ssh-action@v1.0.0
-      with:
-        host: ${{ secrets.SERVER_HOST }}
-        username: ${{ secrets.SERVER_USER }}
-        key: ${{ secrets.SSH_PRIVATE_KEY }}
-        script: |
-          cd /root/telegram-bot
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run basic tests
+        run: |
+          python -c "import anthropic; import telegram; print('✅ Imports OK')"
+          echo "✅ Tests passed"
+
+  # Job 2: Build & Push
+  build:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Generate image metadata
+        id: meta
+        run: |
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          IMAGE_TAG="telegram-bot:${SHORT_SHA}"
+          echo "tags=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ steps.meta.outputs.tags }} .
+          docker tag ${{ steps.meta.outputs.tags }} telegram-bot:latest
+
+      - name: Save image artifact
+        run: |
+          docker save telegram-bot:latest | gzip > bot-image.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: bot-image.tar.gz
+          retention-days: 1
+
+  # Job 3: Deploy to Server
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy image to server
+        run: |
+          scp -i ~/.ssh/id_rsa bot-image.tar.gz \
+            ${{ secrets.SSH_USER }}@${{ secrets.SERVER_HOST }}:/tmp/
+
+      - name: Deploy on server
+        run: |
+          ssh -i ~/.ssh/id_rsa ${{ secrets.SSH_USER }}@${{ secrets.SERVER_HOST }} << 'ENDSSH'
+          set -e
           
-          # Остановка бота
-          sudo systemctl stop telegram-bot
+          echo "📦 Loading new image..."
+          docker load < /tmp/bot-image.tar.gz
           
-          # Backup текущей версии
-          cp bot.py bot.py.backup.$(date +%Y%m%d_%H%M%S)
+          echo "🔄 Stopping old container..."
+          docker stop telegram-bot-current || true
+          docker rm telegram-bot-current || true
           
-          # Получение последних изменений
-          git fetch origin
-          git reset --hard origin/main
+          echo "🚀 Starting new container..."
+          docker run -d \
+            --name telegram-bot-current \
+            --restart unless-stopped \
+            -e TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+            -e ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
+            -e GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
+            -v /root/telegram-bot/conversations:/app/conversations \
+            -v /root/telegram-bot/crm_data:/app/crm_data \
+            telegram-bot:latest
           
-          # Обновление зависимостей (если изменился requirements.txt)
-          source venv/bin/activate
-          pip install -r requirements.txt --quiet
+          echo "⏳ Waiting for health check..."
+          sleep 10
           
-          # Обновление переменных окружения в systemd (если нужно)
-          sudo systemctl daemon-reload
+          if docker ps | grep -q telegram-bot-current; then
+            echo "✅ Deploy successful!"
+            rm /tmp/bot-image.tar.gz
+          else
+            echo "❌ Deploy failed!"
+            docker logs telegram-bot-current
+            exit 1
+          fi
+          ENDSSH
+
+      - name: Notify via Telegram
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          if [ "$STATUS" == "success" ]; then
+            MESSAGE="✅ Deploy успешен%0A%0ACommit: ${{ github.sha }}%0AAuthor: ${{ github.actor }}"
+          else
+            MESSAGE="❌ Deploy провален%0A%0ACommit: ${{ github.sha }}%0AAuthor: ${{ github.actor }}"
+          fi
           
-          # Запуск бота
-          sudo systemctl start telegram-bot
-          
-          # Проверка статуса
-          sleep 3
-          sudo systemctl status telegram-bot --no-pager
-          
-          echo "✅ Deployment completed!"
-    
-    - name: Notify on success
-      if: success()
-      run: echo "🎉 Bot deployed successfully to VPS!"
-    
-    - name: Notify on failure
-      if: failure()
-      run: echo "❌ Deployment failed. Check logs."
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.ADMIN_CHAT_ID }}" \
+            -d "text=${MESSAGE}" \
+            -d "parse_mode=HTML" || true
