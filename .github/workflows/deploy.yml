@@ -116,7 +116,7 @@ jobs:
             --restart unless-stopped \
             -e TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
             -e ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
-            -e GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
+            -e GITHUB_TOKEN="${{ secrets.GH_TOKEN }}" \
             -v /root/telegram-bot/conversations:/app/conversations \
             -v /root/telegram-bot/crm_data:/app/crm_data \
             telegram-bot:latest
