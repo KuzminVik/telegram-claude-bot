@@ -410,3 +410,6 @@ MIT
 ---
 
 **Telegram бот:** @viksimurg_claude_bot
+
+🚀 **CI/CD Pipeline Status:** Active
+📦 **Deployment Method:** Docker via GitHub Actions
