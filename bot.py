@@ -14,6 +14,7 @@ from handlers.with_rag import with_rag_command, clear_rag_history_command, rag_h
 from handlers.github_search import search_repo_command, get_file_command
 from handlers.support import support_command, my_tickets_command
 from handlers.team_assistant import handle_tasks_command, handle_task_create_command, handle_task_update_command, handle_ask_team_command
+from handlers.local_mode import mode_command, clear_local_history_command, get_user_mode
 
 # Настройка логирования
 logging.basicConfig(
@@ -66,15 +67,17 @@ def main():
     application.add_handler(CommandHandler("task_create", handle_task_create_command))
     application.add_handler(CommandHandler("task_update", handle_task_update_command))
     application.add_handler(CommandHandler("ask_team", handle_ask_team_command))
+    application.add_handler(CommandHandler("mode", mode_command))
+    application.add_handler(CommandHandler("clear_local", clear_local_history_command))
     
     # Регистрация обработчика текстовых сообщений
     if hasattr(basic, 'handle_message'):
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, basic.handle_message))
-    
+
     # Инициализация MCP и планировщика при старте приложения
     application.post_init = init_mcp_clients
     application.post_shutdown = shutdown_mcp_clients
-    
+
     logger.info("🤖 Bot is running (v9.1 - RAG Mode)...")
     
     # Запуск бота
@@ -83,3 +86,11 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# Health check file (создаём при старте)
+import os
+try:
+    with open('/tmp/bot_healthy', 'w') as f:
+        f.write('ok')
+except:
+    pass

@@ -24,6 +24,18 @@ scheduler = None
 bot_instance = None
 
 
+async def init_ollama_local_chat_client():
+    global ollama_local_chat_client
+    logger.info("Starting Ollama Local Chat Client...")
+    ollama_local_chat_client = OllamaLocalChatClient()
+    success = await ollama_local_chat_client.start()
+    if success:
+        logger.info("✓ Ollama Local Chat Client initialized")
+    else:
+        logger.warning("⚠ Ollama Local Chat Client failed to initialize")
+    return success
+
+
 async def init_mcp_clients(app):
     """
     Инициализация всех MCP клиентов при старте бота
@@ -127,6 +139,7 @@ async def init_mcp_clients(app):
     
     # Запускаем Task MCP Client
     await init_task_client()
+    await init_ollama_local_chat_client()
 
     # Инициализация планировщика
     scheduler = AsyncIOScheduler()
@@ -180,6 +193,9 @@ async def shutdown_mcp_clients(app):
 #    if scheduler:
 #        scheduler.shutdown()
 #        logger.info("✓ Scheduler stopped")
+    if ollama_local_chat_client:
+        await ollama_local_chat_client.stop()
+        logger.info("✓ Ollama Local Chat Client stopped")
 #
 
 def get_weather_client():
@@ -230,8 +246,10 @@ __all__ = [
 
 # Task MCP Client
 from mcp_clients.task_client import TaskMCPClient
+from mcp_clients.ollama_chat_client import OllamaLocalChatClient
 
 mcp_task_client = None
+ollama_local_chat_client = None
 
 async def init_task_client():
     global mcp_task_client
