@@ -85,13 +85,13 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Показать текущий режим
         current_mode = get_user_mode(user_id)
         mode_emoji = "🤖" if current_mode == "local" else "☁️"
-        mode_name = "Локальная LLM (llama3.2:3b)" if current_mode == "local" else "Claude API"
+        mode_name = "Локальная LLM (llama3.2:1b)" if current_mode == "local" else "Claude API"
         
         await update.message.reply_text(
             f"{mode_emoji} **Текущий режим:** {mode_name}\n\n"
             f"Доступные режимы:\n"
             f"• `/mode claude` - Claude API (Sonnet 4.5)\n"
-            f"• `/mode local` - Локальная LLM (llama3.2:3b)\n\n"
+            f"• `/mode local` - Локальная LLM (llama3.2:1b)\n\n"
             f"⚠️ У каждого режима отдельная история диалогов",
             parse_mode='Markdown'
         )
@@ -122,7 +122,7 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_user_mode(user_id, new_mode)
     
     mode_emoji = "🤖" if new_mode == "local" else "☁️"
-    mode_name = "Локальная LLM (llama3.2:3b)" if new_mode == "local" else "Claude API (Sonnet 4.5)"
+    mode_name = "Локальная LLM (llama3.2:1b)" if new_mode == "local" else "Claude API (Sonnet 4.5)"
     
     # Информация о статистике истории
     if new_mode == "local":
@@ -139,7 +139,7 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"{mode_emoji} **Режим изменён:** {mode_name}\n\n"
         f"{stats}\n\n"
-        f"{'🤖 Локальная LLM работает на Mac через SSH' if new_mode == 'local' else '☁️ Используется Claude Sonnet 4.5'}\n"
+        f"{'🤖 Локальная LLM работает на сервере 157.22.241.102' if new_mode == 'local' else '☁️ Используется Claude Sonnet 4.5'}\n"
         f"⚠️ Истории режимов изолированы друг от друга",
         parse_mode='Markdown'
     )
