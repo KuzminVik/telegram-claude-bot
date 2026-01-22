@@ -92,6 +92,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Загрузить историю локального режима
             local_history = load_local_history(user_id)
             messages = local_history.get("messages", [])
+
+            # Добавить system prompt если это первое сообщение
+            if len(messages) == 0:
+                from config import LOCAL_LLM_SYSTEM_PROMPT
+                messages.append({
+                    "role": "system",
+                    "content": LOCAL_LLM_SYSTEM_PROMPT
+                })
+            
             
             # Добавить новое сообщение пользователя
             messages.append({

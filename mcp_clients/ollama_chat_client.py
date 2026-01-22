@@ -1,4 +1,5 @@
 # /root/telegram-bot/mcp_clients/ollama_chat_client.py
+# Optimized version with improved parameters
 
 import asyncio
 import logging
@@ -36,28 +37,30 @@ class OllamaLocalChatClient:
             logger.error(f"Failed to connect to Ollama: {e}")
             return False
 
-    async def chat(self, messages, temperature=0.7, max_tokens=512):
+    async def chat(self, messages, temperature=0.3, max_tokens=512):
         """
-        Send chat request to Ollama
+        Send chat request to Ollama with optimized parameters
         
         Args:
-            messages: List of {"role": "user/assistant", "content": "text"}
-            temperature: Sampling temperature (0-1)
+            messages: List of {"role": "user/assistant/system", "content": "text"}
+            temperature: Sampling temperature (default: 0.3 for accuracy)
             max_tokens: Max response length
             
         Returns:
             str: Generated response
         """
         try:
-            # Ollama chat API format
+            # Ollama chat API format with optimized parameters
             payload = {
                 "model": self.model,
                 "messages": messages,
                 "stream": False,
                 "options": {
-                    "temperature": temperature,
-                    "num_predict": max_tokens,
-                    "num_ctx": 512  # Small context for 2GB RAM server
+                    "temperature": temperature,      # 0.3 - более точные ответы
+                    "num_predict": max_tokens,       # 512 tokens
+                    "num_ctx": 768,                  # Увеличен контекст (было 512)
+                    "top_p": 0.9,                    # Фокус на вероятных токенах
+                    "repeat_penalty": 1.1            # Избегать повторений
                 }
             }
             
@@ -65,7 +68,7 @@ class OllamaLocalChatClient:
                 async with session.post(
                     f"{self.ollama_url}/api/chat",
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=120)  # Increase timeout for CPU-only generation
+                    timeout=aiohttp.ClientTimeout(total=120)  # 120s timeout
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
