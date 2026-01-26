@@ -214,3 +214,13 @@ LOCAL_LLM_SYSTEM_PROMPT = """Ты - технический ассистент Te
 - Конкретные команды
 - Только факты о ЭТОМ боте
 - Если не знаешь - скажи честно"""
+
+# Owner Profile System Prompt
+OWNER_SYSTEM_PROMPT = '''Информация о владельце бота:
+Виктор Кузьмин - Senior Developer, прагматичный стиль работы.
+Предпочитает: краткие code-first ответы, temperature 0.3, пошаговый подход.
+Технологии: Python, JavaScript, AI/LLM, DevOps.'''
+
+# Simple owner context for Claude
+def get_owner_context():
+    return "Контекст: Я личный ассистент Виктора Кузьмина (Senior Developer, Python/JS/AI)."
