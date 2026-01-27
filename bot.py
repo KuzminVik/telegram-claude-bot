@@ -16,6 +16,7 @@ from handlers.support import support_command, my_tickets_command
 from handlers.team_assistant import handle_tasks_command, handle_task_create_command, handle_task_update_command, handle_ask_team_command
 from handlers.local_mode import mode_command, clear_local_history_command, get_user_mode
 from handlers.analyze_handler import analyze_command
+from handlers.voice_handler import handle_voice, init_whisper
 
 # Настройка логирования
 logging.basicConfig(
@@ -71,6 +72,7 @@ def main():
     application.add_handler(CommandHandler("mode", mode_command))
     application.add_handler(CommandHandler("clear_local", clear_local_history_command))
     application.add_handler(CommandHandler("analyze", analyze_command))
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     
     # Регистрация обработчика текстовых сообщений
     if hasattr(basic, 'handle_message'):
@@ -83,6 +85,12 @@ def main():
     logger.info("🤖 Bot is running (v9.1 - RAG Mode)...")
     
     # Запуск бота
+    # Инициализация Whisper
+    init_whisper()
+
+    # Инициализация Whisper
+    init_whisper()
+
     application.run_polling()
 
 
